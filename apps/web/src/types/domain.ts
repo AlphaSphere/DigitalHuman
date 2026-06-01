@@ -27,6 +27,8 @@ export type TaskStatus =
 
 export type SegmentSource = 'whisper' | 'pasted_subtitle' | 'pasted_script' | 'manual_edit'
 
+export type ScriptGenerationMode = 'full_script' | 'timed_segments'
+
 export type ArtifactType =
   | 'source_video'
   | 'audio'
@@ -40,6 +42,10 @@ export type ArtifactType =
 
 export type AspectRatio = '9:16' | '16:9' | '1:1'
 
+export type GenerationVoiceMode = 'uploaded_voice' | 'preset_voice'
+
+export type GenerationVideoMode = 'uploaded_video' | 'preset_avatar'
+
 export interface SubtitleStyle {
   enabled: boolean
   font_size: number
@@ -51,10 +57,15 @@ export interface SubtitleStyle {
 export interface Task {
   id: string
   script_source: ScriptSource
+  script_generation_mode?: ScriptGenerationMode | null
   status: TaskStatus
   source_video_path?: string | null
   duration?: number | null
   aspect_ratio?: AspectRatio
+  generation_voice_mode?: GenerationVoiceMode | null
+  custom_voice_path?: string | null
+  generation_video_mode?: GenerationVideoMode | null
+  custom_video_path?: string | null
   voice_profile_id?: string | null
   avatar_profile_id?: string | null
   subtitle_style?: SubtitleStyle | null

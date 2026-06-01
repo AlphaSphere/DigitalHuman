@@ -3,11 +3,14 @@ import type {
   AspectRatio,
   AvatarProfile,
   AuthorizationRecord,
+  GenerationVoiceMode,
+  GenerationVideoMode,
   PrePublishCheckInput,
   RiskCheck,
   RiskFinding,
   RiskStatus,
   RiskType,
+  ScriptGenerationMode,
   ScriptSegment,
   ScriptSource,
   SubtitleStyle,
@@ -32,19 +35,22 @@ interface CreateVideoTaskInput {
   fileName?: string
   source_url?: string
   aspect_ratio: AspectRatio
-  authorization_confirmed: boolean
 }
 
 interface CreateScriptTaskInput {
   content: string
   content_type: Exclude<ScriptSource, 'video_asr'>
   aspect_ratio: AspectRatio
-  authorization_confirmed: boolean
 }
 
 interface SaveGenerationConfigInput {
   voice_profile_id: string
   avatar_profile_id: string
+  generation_voice_mode: GenerationVoiceMode
+  custom_voice_file_name?: string
+  generation_video_mode: GenerationVideoMode
+  custom_video_file_name?: string
+  authorization_confirmed: boolean
   aspect_ratio: AspectRatio
   subtitle_style: SubtitleStyle
 }
@@ -222,7 +228,7 @@ const createAuthorizationRecords = (taskId: string, assetTypes: AuthorizationRec
     id: createId('auth'),
     task_id: taskId,
     asset_type: assetType,
-    source: assetType === 'voice' || assetType === 'avatar' ? 'preset' : 'user_upload',
+    source: 'user_upload',
     authorization_confirmed: true,
     authorization_note: '用户确认拥有素材使用授权，且内容可用于 AI 生成和对外发布。',
     confirmed_at: now(),
@@ -368,7 +374,6 @@ export const getProgress = (task: Task): TaskProgress => {
 export const mockApi = {
   async createVideoTask(input: CreateVideoTaskInput) {
     await wait()
-    if (!input.authorization_confirmed) throw new Error('请先确认素材授权')
     if (!input.fileName && !input.source_url) throw new Error('请上传参考视频或填写视频链接')
 
     return updateState((state) => {
@@ -387,14 +392,13 @@ export const mockApi = {
       }
       state.tasks[id] = task
       state.segments[id] = buildSegments(id, 'whisper')
-      state.authorizationRecords[id] = createAuthorizationRecords(id, ['video', 'script', 'voice', 'avatar'])
+      state.authorizationRecords[id] = []
       return task
     })
   },
 
   async createScriptTask(input: CreateScriptTaskInput) {
     await wait()
-    if (!input.authorization_confirmed) throw new Error('请先确认素材授权')
     if (!input.content.trim()) throw new Error('请先粘贴字幕或口播文案')
 
     return updateState((state) => {
@@ -412,7 +416,7 @@ export const mockApi = {
       }
       state.tasks[id] = task
       state.segments[id] = buildSegments(id, input.content_type, input.content)
-      state.authorizationRecords[id] = createAuthorizationRecords(id, ['script', 'voice', 'avatar'])
+      state.authorizationRecords[id] = []
       return task
     })
   },
@@ -449,10 +453,12 @@ export const mockApi = {
     return state.segments[taskId] ?? []
   },
 
-  async updateSegments(taskId: string, segments: ScriptSegment[]) {
+  async updateSegments(taskId: string, segments: ScriptSegment[], scriptGenerationMode?: ScriptGenerationMode) {
     await wait()
     return updateState((state) => {
-      ensureTask(state, taskId)
+      const task = ensureTask(state, taskId)
+      task.script_generation_mode = scriptGenerationMode ?? task.script_generation_mode ?? 'full_script'
+      task.updated_at = now()
       state.segments[taskId] = segments.map((segment, index) => ({
         ...segment,
         index: index + 1,
@@ -523,11 +529,42 @@ export const mockApi = {
     await wait()
     return updateState((state) => {
       const task = ensureTask(state, taskId)
+      if (input.generation_voice_mode === 'uploaded_voice' && !input.custom_voice_file_name) {
+        throw new Error('请先上传自己的音色样本')
+      }
+      if (input.generation_video_mode === 'uploaded_video' && !input.custom_video_file_name) {
+        throw new Error('请先上传自己拍摄的视频素材')
+      }
+      if (
+        (input.generation_voice_mode === 'uploaded_voice' || input.generation_video_mode === 'uploaded_video') &&
+        !input.authorization_confirmed
+      ) {
+        throw new Error('请先确认上传素材授权')
+      }
+
       task.voice_profile_id = input.voice_profile_id
       task.avatar_profile_id = input.avatar_profile_id
+      task.generation_voice_mode = input.generation_voice_mode
+      task.custom_voice_path =
+        input.generation_voice_mode === 'uploaded_voice'
+          ? `storage/tasks/${taskId}/input/${input.custom_voice_file_name}`
+          : null
+      task.generation_video_mode = input.generation_video_mode
+      task.custom_video_path =
+        input.generation_video_mode === 'uploaded_video'
+          ? `storage/tasks/${taskId}/input/${input.custom_video_file_name}`
+          : null
       task.aspect_ratio = input.aspect_ratio
       task.subtitle_style = input.subtitle_style
       task.updated_at = now()
+
+      // 只有用户上传自己的声音或自拍视频时，才记录这一步的素材授权确认。
+      const uploadedAssetTypes: AuthorizationRecord['asset_type'][] = []
+      if (input.generation_voice_mode === 'uploaded_voice') uploadedAssetTypes.push('voice')
+      if (input.generation_video_mode === 'uploaded_video') uploadedAssetTypes.push('video')
+      state.authorizationRecords[taskId] = uploadedAssetTypes.length
+        ? createAuthorizationRecords(taskId, uploadedAssetTypes)
+        : []
       return task
     })
   },

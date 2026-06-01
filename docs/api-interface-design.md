@@ -31,6 +31,8 @@ sequenceDiagram
   User->>Web: 编辑并确认文案
   Web->>API: PUT /api/tasks/{task_id}/segments
   Web->>API: POST /api/tasks/{task_id}/confirm-script
+  Web->>API: GET /api/tasks/{task_id}/risk-checks?stage=script
+  User->>Web: 必要时人工确认风险
   Web->>API: POST /api/tasks/{task_id}/generation-config
   Web->>API: POST /api/tasks/{task_id}/generate
   API->>Queue: 投递生成任务
@@ -60,9 +62,11 @@ sequenceDiagram
   Worker->>Storage: 保存 parsed_segments.json
   Worker->>API: 更新状态为 script_parsed
   Web->>API: GET /api/tasks/{task_id}/segments
-  User->>Web: 调整分段并确认文案
+  User->>Web: 选择完整文案或分段时间轴并确认文案
   Web->>API: PUT /api/tasks/{task_id}/segments
   Web->>API: POST /api/tasks/{task_id}/confirm-script
+  Web->>API: GET /api/tasks/{task_id}/risk-checks?stage=script
+  User->>Web: 必要时人工确认风险
   Web->>API: POST /api/tasks/{task_id}/generation-config
   Web->>API: POST /api/tasks/{task_id}/generate
   Web->>API: 轮询 GET /api/tasks/{task_id}
@@ -85,7 +89,8 @@ http://localhost:8000
 ### 3.2 请求格式
 
 - 普通 JSON 接口使用 `Content-Type: application/json`。
-- 上传视频接口使用 `multipart/form-data`。
+- 上传参考视频接口使用 `multipart/form-data`。
+- 配置页如果同时上传自定义音色样本或自拍视频，`generation-config` 可以使用 `multipart/form-data`；如果文件已先上传到素材存储，也可以用 JSON 传 `custom_voice_file_name` / `custom_video_file_name` 或后续扩展的素材 ID。
 - 下载接口由后端返回文件流或短期有效下载链接。
 
 ### 3.3 通用响应格式
@@ -148,10 +153,15 @@ MVP 可以先不启用账号系统。后续接入多用户时建议：
 {
   "id": "task_01HZX...",
   "script_source": "video_asr",
+  "script_generation_mode": "full_script",
   "status": "transcribed",
   "source_video_path": "storage/tasks/task_01HZX/input/source.mp4",
   "duration": 62.5,
   "aspect_ratio": "9:16",
+  "generation_voice_mode": "uploaded_voice",
+  "custom_voice_path": "storage/tasks/task_01HZX/input/voice_sample.wav",
+  "generation_video_mode": "uploaded_video",
+  "custom_video_path": "storage/tasks/task_01HZX/input/self_video.mp4",
   "voice_profile_id": "voice_default",
   "avatar_profile_id": "avatar_default",
   "error_code": null,
@@ -300,7 +310,6 @@ POST /api/tasks/video
 | --- | --- | --- | --- |
 | `file` | file | 是 | 参考视频文件，建议限制为 `mp4` / `mov`。 |
 | `aspect_ratio` | string | 否 | 期望输出比例，例如 `9:16`。 |
-| `authorization_confirmed` | boolean | 是 | 用户确认拥有素材授权。 |
 
 响应示例：
 
@@ -321,7 +330,7 @@ POST /api/tasks/video
 
 常见错误：
 
-- `VALIDATION_ERROR`：文件类型、大小、时长或授权确认不符合要求。
+- `VALIDATION_ERROR`：文件类型、大小或时长不符合要求。
 
 ### 6.2 粘贴字幕 / 文案并创建任务
 
@@ -339,8 +348,7 @@ POST /api/tasks/script
 {
   "content": "大家好，今天介绍一个数字人口播流程。",
   "content_type": "pasted_script",
-  "aspect_ratio": "9:16",
-  "authorization_confirmed": true
+  "aspect_ratio": "9:16"
 }
 ```
 
@@ -349,7 +357,6 @@ POST /api/tasks/script
 | `content` | string | 是 | 用户粘贴的字幕或纯文案。 |
 | `content_type` | enum | 是 | `pasted_subtitle` / `pasted_script`。 |
 | `aspect_ratio` | string | 否 | 期望输出比例。 |
-| `authorization_confirmed` | boolean | 是 | 用户确认拥有素材授权。 |
 
 响应示例：
 
@@ -419,12 +426,18 @@ PUT /api/tasks/{task_id}/segments
 
 用途：保存用户编辑后的文案、分段顺序和时间信息。
 
+前端支持两种文案生成方式：
+
+- `full_script`：默认模式，把完整原视频文案保存为一个文案段落，完整文本最多 5000 字。
+- `timed_segments`：按时间点保存多个文案片段，保留 `start_time` / `end_time` 供字幕和视频节奏对齐。
+
 前端调用时机：文案确认页中，用户点击保存或自动保存时调用。
 
 请求示例：
 
 ```json
 {
+  "script_generation_mode": "timed_segments",
   "segments": [
     {
       "id": "seg_001",
@@ -432,6 +445,23 @@ PUT /api/tasks/{task_id}/segments
       "start_time": 0.0,
       "end_time": 4.5,
       "edited_text": "大家好，今天介绍一个数字人口播视频生成流程。"
+    }
+  ]
+}
+```
+
+完整文案模式请求示例：
+
+```json
+{
+  "script_generation_mode": "full_script",
+  "segments": [
+    {
+      "id": "seg_full_task_01HZX",
+      "index": 1,
+      "start_time": 0.0,
+      "end_time": 62.5,
+      "edited_text": "这里是完整原视频文案，最多 5000 字。"
     }
   ]
 }
@@ -465,7 +495,7 @@ PUT /api/tasks/{task_id}/segments
 POST /api/tasks/{task_id}/confirm-script
 ```
 
-用途：将当前段落保存为生成快照，任务状态更新为 `script_confirmed`。
+用途：将当前文案保存为生成快照，并触发或生成文案风险检查结果。无风险时任务状态更新为 `script_confirmed`；需人工确认时更新为 `content_review_required`；高风险阻断时更新为 `content_rejected`。
 
 前端调用时机：用户确认文案无误并进入配置页前调用。
 
@@ -485,7 +515,7 @@ POST /api/tasks/{task_id}/confirm-script
   "data": {
     "task": {
       "id": "task_01HZX...",
-      "status": "script_confirmed",
+      "status": "content_review_required",
       "updated_at": "2026-06-01T06:40:00Z"
     }
   }
@@ -565,9 +595,16 @@ GET /api/avatar-profiles
 POST /api/tasks/{task_id}/generation-config
 ```
 
-用途：保存音色、数字人、输出比例和字幕样式配置。
+用途：保存音色、成片素材、数字人、输出比例和字幕样式配置。
 
 前端调用时机：用户在配置页点击保存或进入生成进度页前调用。
+
+配置页支持两组二选一：
+
+- 音色：`uploaded_voice` 上传自己的音色样本，或 `preset_voice` 使用默认音色。
+- 成片素材：`uploaded_video` 上传自己拍的视频，或 `preset_avatar` 使用默认数字人。
+
+当 `generation_voice_mode=uploaded_voice` 或 `generation_video_mode=uploaded_video` 时，必须传入对应文件信息，并要求 `authorization_confirmed=true`。
 
 请求示例：
 
@@ -575,6 +612,11 @@ POST /api/tasks/{task_id}/generation-config
 {
   "voice_profile_id": "voice_default",
   "avatar_profile_id": "avatar_default",
+  "generation_voice_mode": "uploaded_voice",
+  "custom_voice_file_name": "voice_sample.wav",
+  "generation_video_mode": "uploaded_video",
+  "custom_video_file_name": "self_video.mp4",
+  "authorization_confirmed": true,
   "aspect_ratio": "9:16",
   "subtitle_style": {
     "enabled": true,
@@ -593,6 +635,10 @@ POST /api/tasks/{task_id}/generation-config
   "data": {
     "task": {
       "id": "task_01HZX...",
+      "generation_voice_mode": "uploaded_voice",
+      "custom_voice_path": "storage/tasks/task_01HZX/input/voice_sample.wav",
+      "generation_video_mode": "uploaded_video",
+      "custom_video_path": "storage/tasks/task_01HZX/input/self_video.mp4",
       "voice_profile_id": "voice_default",
       "avatar_profile_id": "avatar_default",
       "aspect_ratio": "9:16",
@@ -604,7 +650,7 @@ POST /api/tasks/{task_id}/generation-config
 
 常见错误：
 
-- `VALIDATION_ERROR`：音色 ID、数字人 ID 或字幕样式不合法。
+- `VALIDATION_ERROR`：音色 ID、数字人 ID、字幕样式、自定义音色文件、自自拍视频文件或授权确认不合法。
 - `409`：任务尚未确认文案。
 
 ### 6.9 开始生成任务
@@ -901,6 +947,7 @@ POST /api/tasks/{task_id}/pre-publish-check
   "title": "视频标题",
   "description": "视频简介",
   "tags": ["AI数字人", "口播"],
+  "ai_label_confirmed": true,
   "cover_artifact_id": "artifact_cover"
 }
 ```
@@ -981,10 +1028,11 @@ POST /api/tasks/{task_id}/pre-publish-check
 ## 9. 前端联调注意事项
 
 - 创建任务后不要等待生成完成，应立刻进入进度页并通过 `GET /api/tasks/{task_id}` 轮询状态。
-- 文案确认前必须允许用户查看和编辑 `script_segments`，避免直接用 ASR 结果进入生成。
-- `PUT /segments` 适合保存草稿，`POST /confirm-script` 才代表用户确认最终文案。
+- 文案确认前必须允许用户查看和编辑文案，默认使用 `full_script` 完整文案模式，用户可切换为 `timed_segments` 分段时间轴模式。
+- `PUT /segments` 适合保存草稿，并应同时保存 `script_generation_mode`；`POST /confirm-script` 才代表用户确认最终文案。
 - 任务进入 `dubbing` 之后，前端不应再允许编辑文案；如需修改，应创建新任务或后续设计回退机制。
-- 文件上传前端需要提示格式、大小、时长限制，并要求用户确认拥有素材授权。
+- 创建任务页的参考视频 / 文案输入不强制统一授权确认；配置页上传自定义音色或自拍视频时，必须要求用户确认素材授权，并将授权记录写入 `authorization_records`。
+- 配置页缺少自定义音色、自自拍视频或授权确认时，应在用户点击保存 / 开始生成后提示缺失项，不要在页面初始加载时直接展示红色错误。
 - 文案确认后应查询或触发风险审核；`warning` / `manual_review` 必须展示命中位置和处理建议，不能只显示“有风险”。
 - 发布前合规检查不应影响用户下载本地视频，但 `blocked` 平台不能自动发布。
 - 下载和预览不要直接拼接文件路径，应始终通过后端接口获取。

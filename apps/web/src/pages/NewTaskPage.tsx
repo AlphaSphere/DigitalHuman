@@ -15,7 +15,6 @@ const taskSchema = z.object({
   videoUrl: z.string(),
   content: z.string(),
   aspectRatio: z.enum(['9:16', '16:9', '1:1']),
-  authorizationConfirmed: z.boolean().refine(Boolean, '请先确认素材授权'),
 })
 
 type TaskFormValues = z.infer<typeof taskSchema>
@@ -48,7 +47,6 @@ export function NewTaskPage() {
       videoUrl: '',
       content: '',
       aspectRatio: '9:16',
-      authorizationConfirmed: false,
     },
   })
   const sourceMode = useWatch({ control: form.control, name: 'sourceMode' })
@@ -66,7 +64,6 @@ export function NewTaskPage() {
           fileName: values.videoInputMode === 'upload' ? file?.name : undefined,
           source_url: values.videoInputMode === 'url' ? values.videoUrl.trim() : undefined,
           aspect_ratio: values.aspectRatio as AspectRatio,
-          authorization_confirmed: values.authorizationConfirmed,
         })
       }
 
@@ -74,7 +71,6 @@ export function NewTaskPage() {
         content: values.content,
         content_type: 'pasted_script',
         aspect_ratio: values.aspectRatio as AspectRatio,
-        authorization_confirmed: values.authorizationConfirmed,
       })
     },
     onSuccess: (task) => navigate(`/tasks/${task.id}/script`),
@@ -179,6 +175,7 @@ export function NewTaskPage() {
               {...form.register('content')}
             />
           )}
+          {error ? <p className="form-error hero-panel-error">{error}</p> : null}
         </main>
 
         <aside className="panel">
@@ -189,15 +186,8 @@ export function NewTaskPage() {
             <li>MVP 建议 3 分钟以内</li>
             <li>文案会进入确认页，不会直接生成</li>
             <li>确认文案后会进行内容风险检查</li>
+            <li>素材授权会在上传音色或自拍视频时确认</li>
           </ul>
-          <label className="check-row">
-            <input type="checkbox" {...form.register('authorizationConfirmed')} />
-            我确认拥有视频、字幕、声音、肖像和图片素材的合法使用授权，且内容可用于 AI 生成和对外发布。
-          </label>
-          {form.formState.errors.authorizationConfirmed ? (
-            <p className="form-error">{form.formState.errors.authorizationConfirmed.message}</p>
-          ) : null}
-          {error ? <p className="form-error">{error}</p> : null}
         </aside>
 
         <footer className="action-bar">

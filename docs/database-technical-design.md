@@ -29,10 +29,15 @@ erDiagram
   tasks {
     string id
     enum script_source
+    enum script_generation_mode
     enum status
     string source_video_path
     float duration
     string aspect_ratio
+    enum generation_voice_mode
+    string custom_voice_path
+    enum generation_video_mode
+    string custom_video_path
     string voice_profile_id
     string avatar_profile_id
     json subtitle_style
@@ -120,10 +125,15 @@ erDiagram
 | --- | --- | --- | --- |
 | `id` | string | 是 | 任务 ID，建议使用 UUID 或 ULID。 |
 | `script_source` | enum | 是 | 文案来源：`video_asr` / `pasted_subtitle` / `pasted_script`。 |
+| `script_generation_mode` | enum | 否 | 文案生成方式：`full_script` / `timed_segments`，默认 `full_script`。 |
 | `status` | enum | 是 | 当前任务状态，详见“任务状态机”。 |
 | `source_video_path` | string | 否 | 原始视频路径，仅上传视频任务需要。 |
 | `duration` | float | 否 | 原视频时长或最终生成音频时长，单位秒。 |
 | `aspect_ratio` | string | 否 | 输出比例，例如 `16:9`、`9:16`、`1:1`。 |
+| `generation_voice_mode` | enum | 否 | 音色来源：`uploaded_voice` / `preset_voice`。 |
+| `custom_voice_path` | string | 否 | 用户上传音色样本路径，仅 `uploaded_voice` 需要。 |
+| `generation_video_mode` | enum | 否 | 成片素材来源：`uploaded_video` / `preset_avatar`。 |
+| `custom_video_path` | string | 否 | 用户上传自拍视频路径，仅 `uploaded_video` 需要。 |
 | `voice_profile_id` | string | 否 | 选择的音色 ID，对应 `voice_profiles.id`。 |
 | `avatar_profile_id` | string | 否 | 选择的数字人 ID，对应 `avatar_profiles.id`。 |
 | `subtitle_style` | json | 否 | 字幕样式配置，例如字体大小、位置、颜色。 |
@@ -137,6 +147,7 @@ erDiagram
 - `status` 每次变更都要同步更新 `updated_at`。
 - `error_code` 和 `error_message` 只在 `failed` 状态下对前端展示。
 - MVP 可以先不建独立配置表，将生成配置保存在 `tasks` 的配置字段中；当配置版本变多时再拆表。
+- 如果使用 `uploaded_voice` 或 `uploaded_video`，必须有对应授权记录；如果使用 `preset_voice` 或 `preset_avatar`，可不写用户上传授权记录。
 
 ### 4.2 `script_segments`
 
@@ -159,6 +170,8 @@ erDiagram
 - 用户编辑文案时，不覆盖 `original_text`，只更新 `edited_text`。
 - 用户调整分段顺序后，要重新写入连续的 `index`，避免前端排序异常。
 - 确认文案时，后续生成优先使用 `edited_text`，为空时回退到 `original_text`。
+- `script_generation_mode=full_script` 时，推荐保存为单条 `script_segments`，`index=1`，`edited_text` 为完整文案，最大 5000 字。
+- `script_generation_mode=timed_segments` 时，按分段保存多条记录，保留 `start_time` / `end_time` 用于字幕和节奏对齐。
 
 ### 4.3 `artifacts`
 
@@ -235,6 +248,8 @@ erDiagram
 
 保存素材授权确认记录，用于声音、肖像、视频、字幕和图片等素材的合规留痕。
 
+当前 MVP 交互中，创建任务页不强制写入授权记录；只有用户在配置页选择上传自己的音色样本或上传自己拍的视频时，才要求勾选授权确认，并分别写入 `voice` / `video` 类型记录。
+
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `id` | string | 是 | 授权记录 ID。 |
@@ -263,6 +278,27 @@ erDiagram
 | `pasted_subtitle` | 粘贴字幕解析生成的片段。 |
 | `pasted_script` | 粘贴纯文案切分生成的片段。 |
 | `manual_edit` | 用户手动调整后的片段。 |
+
+### 5.2.1 文案生成方式 `script_generation_mode`
+
+| 值 | 说明 |
+| --- | --- |
+| `full_script` | 默认模式，完整原视频文案作为单段文本保存，最多 5000 字。 |
+| `timed_segments` | 分段时间轴模式，按多个时间点保存文案片段。 |
+
+### 5.2.2 音色来源 `generation_voice_mode`
+
+| 值 | 说明 |
+| --- | --- |
+| `uploaded_voice` | 用户上传自己的音色样本，需要授权确认记录。 |
+| `preset_voice` | 使用系统默认音色。 |
+
+### 5.2.3 成片素材来源 `generation_video_mode`
+
+| 值 | 说明 |
+| --- | --- |
+| `uploaded_video` | 用户上传自己拍的视频作为成片素材，需要授权确认记录。 |
+| `preset_avatar` | 使用系统默认数字人生成口播画面。 |
 
 ### 5.3 产物类型 `artifact.type`
 
@@ -341,10 +377,10 @@ stateDiagram-v2
   avatar_generating --> avatar_generated
   avatar_generated --> subtitle_generating
   subtitle_generating --> composing
-  composing --> publish_checking
+  composing --> completed
+  completed --> publish_checking
   publish_checking --> publish_blocked
   publish_checking --> publish_ready
-  publish_ready --> completed
 
   uploaded --> failed
   transcribing --> failed
@@ -429,6 +465,7 @@ storage/
         source.mp4
         pasted_script.txt
         voice_sample.wav
+        self_video.mp4
       intermediate/
         source_audio.wav
         whisper_segments.json
@@ -447,6 +484,7 @@ storage/
 数据库与文件存储的边界：
 
 - `tasks.source_video_path` 保存原始视频路径，便于任务入口快速判断。
+- `tasks.custom_voice_path` 保存配置页上传的音色样本路径，`tasks.custom_video_path` 保存配置页上传的自拍视频路径。
 - `artifacts.path` 保存所有输入、中间和输出产物路径，是下载和重试的主要依据。
 - `script_segments` 保存可编辑文案结构，`confirmed_script.json` 保存生成时使用的最终快照。
 - 文件名不要直接使用用户上传名称，统一由后端按 `task_id` 和产物类型生成安全路径。

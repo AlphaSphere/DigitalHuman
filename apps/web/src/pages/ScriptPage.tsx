@@ -5,30 +5,57 @@ import { SegmentEditor } from '../components/SegmentEditor'
 import { StatusBadge } from '../components/StatusBadge'
 import { StepNav } from '../components/StepNav'
 import { getStatusMessage, mockApi } from '../lib/api-client/mockApi'
-import type { ScriptSegment } from '../types/domain'
+import type { ScriptGenerationMode, ScriptSegment } from '../types/domain'
+
+const FULL_SCRIPT_MAX_LENGTH = 5000
+
+const getSegmentText = (segment: ScriptSegment) => segment.edited_text ?? segment.original_text
+
+const buildFullScript = (segments: ScriptSegment[]) => segments.map(getSegmentText).join('\n')
+
+const buildFullScriptSegment = (taskId: string, text: string, segments: ScriptSegment[]): ScriptSegment[] => [
+  {
+    id: segments[0]?.id ?? `seg_full_${taskId}`,
+    task_id: taskId,
+    index: 1,
+    source_type: 'manual_edit',
+    start_time: segments[0]?.start_time ?? null,
+    end_time: segments.at(-1)?.end_time ?? null,
+    original_text: text,
+    edited_text: text,
+    confidence: null,
+  },
+]
 
 export function ScriptPage() {
   const { taskId = '' } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [draftSegments, setDraftSegments] = useState<ScriptSegment[] | null>(null)
+  const [scriptModeOverride, setScriptModeOverride] = useState<ScriptGenerationMode | null>(null)
+  const [fullScriptDraftOverride, setFullScriptDraftOverride] = useState<string | null>(null)
 
   const taskQuery = useQuery({ queryKey: ['task', taskId], queryFn: () => mockApi.getTask(taskId) })
   const segmentQuery = useQuery({ queryKey: ['segments', taskId], queryFn: () => mockApi.getSegments(taskId) })
 
   const segments = draftSegments ?? segmentQuery.data ?? []
+  const scriptMode = scriptModeOverride ?? taskQuery.data?.script_generation_mode ?? 'full_script'
+  const fullScriptDraft = fullScriptDraftOverride ?? buildFullScript(segments)
+  const activeSegments =
+    scriptMode === 'full_script' ? buildFullScriptSegment(taskId, fullScriptDraft, segments) : segments
 
   const saveMutation = useMutation({
-    mutationFn: () => mockApi.updateSegments(taskId, segments),
+    mutationFn: () => mockApi.updateSegments(taskId, activeSegments, scriptMode),
     onSuccess: (saved) => {
       setDraftSegments(saved)
+      setFullScriptDraftOverride(buildFullScript(saved))
       queryClient.invalidateQueries({ queryKey: ['segments', taskId] })
     },
   })
 
   const confirmMutation = useMutation({
     mutationFn: async () => {
-      await mockApi.updateSegments(taskId, segments)
+      await mockApi.updateSegments(taskId, activeSegments, scriptMode)
       return mockApi.confirmScript(taskId)
     },
     onSuccess: (task) => navigate(`/tasks/${task.id}/risk-review`),
@@ -71,13 +98,51 @@ export function ScriptPage() {
             </div>
             <div>
               <dt>段落</dt>
-              <dd>{segments.length} 段</dd>
+              <dd>{scriptMode === 'full_script' ? '完整文案' : `${segments.length} 段`}</dd>
             </div>
           </dl>
         </aside>
 
         <main className="panel">
-          <SegmentEditor segments={segments} onChange={setDraftSegments} />
+          <div className="script-mode-switch">
+            <button
+              type="button"
+              className={`select-card ${scriptMode === 'full_script' ? 'active' : ''}`}
+              onClick={() => {
+                setFullScriptDraftOverride(buildFullScript(segments))
+                setScriptModeOverride('full_script')
+              }}
+            >
+              <strong>完整文案生成</strong>
+              <p>合并展示原视频完整文案，不按时间点拆分，适合只需要整段口播配音的自动生成。</p>
+            </button>
+            <button
+              type="button"
+              className={`select-card ${scriptMode === 'timed_segments' ? 'active' : ''}`}
+              onClick={() => setScriptModeOverride('timed_segments')}
+            >
+              <strong>分段时间轴生成</strong>
+              <p>保留每个时间点和对应文案，适合要按原视频节奏拼接、字幕对齐的自动生成。</p>
+            </button>
+          </div>
+
+          {scriptMode === 'full_script' ? (
+            <label className="full-script-editor">
+              <span className="editor-label-row">
+                完整原视频文案
+                <small>{fullScriptDraft.length} / {FULL_SCRIPT_MAX_LENGTH}</small>
+              </span>
+              <textarea
+                value={fullScriptDraft}
+                onChange={(event) => setFullScriptDraftOverride(event.target.value)}
+                maxLength={FULL_SCRIPT_MAX_LENGTH}
+                rows={16}
+                placeholder="这里展示完整原视频文案，可直接整体修改..."
+              />
+            </label>
+          ) : (
+            <SegmentEditor segments={segments} onChange={setDraftSegments} />
+          )}
         </main>
 
         <aside className="panel">
@@ -86,12 +151,16 @@ export function ScriptPage() {
             低置信度片段会标记为“需检查”。确认文案后，系统会继续检查敏感词、隐私和 AI 标识风险。
           </p>
           <div className="stat-card">
-            <strong>{segments.filter((segment) => segment.confidence && segment.confidence < 0.86).length}</strong>
-            <span>个需检查片段</span>
+            <strong>{scriptMode === 'full_script' ? 1 : segments.filter((segment) => segment.confidence && segment.confidence < 0.86).length}</strong>
+            <span>{scriptMode === 'full_script' ? '段完整文案' : '个需检查片段'}</span>
           </div>
           <div className="stat-card">
-            <strong>{segments.reduce((count, segment) => count + (segment.edited_text ?? '').length, 0)}</strong>
+            <strong>{activeSegments.reduce((count, segment) => count + getSegmentText(segment).length, 0)}</strong>
             <span>确认文本字数</span>
+          </div>
+          <div className="stat-card">
+            <strong>{scriptMode === 'full_script' ? '整段' : '时间轴'}</strong>
+            <span>自动化生成方式</span>
           </div>
         </aside>
       </div>

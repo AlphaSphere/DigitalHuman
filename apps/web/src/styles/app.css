@@ -169,6 +169,10 @@ h2 {
   min-height: 410px;
 }
 
+.hero-panel-error {
+  margin: auto 0 0;
+}
+
 .file-drop {
   display: grid;
   height: 100%;
@@ -453,6 +457,12 @@ h2 {
   gap: 18px;
 }
 
+.avatar-preview em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 800;
+}
+
 .final-video {
   min-height: 540px;
   font-size: 24px;
@@ -464,6 +474,59 @@ h2 {
   max-height: 620px;
   overflow: auto;
   padding-right: 8px;
+}
+
+.script-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.script-mode-switch .select-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  height: 100%;
+  margin-bottom: 0;
+}
+
+.script-mode-switch .select-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.full-script-editor {
+  display: grid;
+  gap: 10px;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.editor-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.editor-label-row small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.full-script-editor textarea {
+  width: 100%;
+  min-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  color: var(--text);
+  background: #0d1428;
+  padding: 16px;
+  line-height: 1.7;
+  resize: vertical;
 }
 
 .segment-card {
@@ -533,9 +596,55 @@ h2 {
   margin-top: 28px;
 }
 
+.material-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.material-mode-grid .select-card {
+  height: 100%;
+  margin-bottom: 0;
+}
+
+.default-voice-grid,
+.custom-media-card {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.custom-media-card .file-drop {
+  min-height: 220px;
+}
+
+.upload-guidance,
+.config-summary {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(13, 20, 40, 0.72);
+  padding: 14px;
+}
+
+.upload-guidance {
+  display: grid;
+  gap: 4px;
+}
+
+.upload-guidance span {
+  color: var(--muted);
+}
+
 .field-row {
   justify-content: space-between;
   margin-top: 12px;
+}
+
+.material-auth-check {
+  align-items: flex-start;
+  margin-top: 18px;
+  color: var(--text);
+  line-height: 1.5;
 }
 
 .field-stack {
@@ -573,6 +682,26 @@ h2 {
 
 .compliance-note span {
   color: var(--muted);
+}
+
+.config-summary {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 22px;
+}
+
+.config-summary div {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.config-summary span {
+  color: var(--muted);
+}
+
+.config-summary strong {
+  text-align: right;
 }
 
 .timeline {
