@@ -509,8 +509,8 @@ MVP 阶段建议直接使用 Docker Compose 管理依赖服务，避免 Redis、
 
 | 服务 | 技术 | 端口 / 数据 | 职责 |
 | --- | --- | --- | --- |
-| `web` | React + Vite | `3000` | 前端页面、任务创建、文案确认、进度展示、结果预览。 |
-| `api` | FastAPI + Uvicorn | `8000` | REST API、参数校验、数据库读写、任务投递。 |
+| `web` | React + Vite，代码位于 `Frontend/` | `5173` | 前端页面、任务创建、文案确认、进度展示、结果预览。 |
+| `api` | FastAPI + Uvicorn，代码位于 `Backend/` | `8000` | REST API、参数校验、数据库读写、任务投递。 |
 | `worker` | Celery Worker | 共享 `storage` volume | 执行 ASR、配音、数字人、字幕和合成任务。 |
 | `redis` | Redis | `6379` | 队列 broker 和任务状态缓存。 |
 | `mysql` | MySQL | `3306` + `mysql_data` volume | 正式化数据库。MVP 也可以临时换成 SQLite。 |
@@ -530,14 +530,14 @@ services:
   web:
     build:
       context: .
-      dockerfile: docker/web.Dockerfile
-    ports: ["3000:3000"]
+      dockerfile: Frontend/Dockerfile
+    ports: ["5173:5173"]
     depends_on: [api]
 
   api:
     build:
       context: .
-      dockerfile: docker/api.Dockerfile
+      dockerfile: Backend/Dockerfile
     ports: ["8000:8000"]
     depends_on: [mysql, redis]
     volumes:
@@ -546,7 +546,7 @@ services:
   worker:
     build:
       context: .
-      dockerfile: docker/worker.Dockerfile
+      dockerfile: Backend/worker.Dockerfile
     depends_on: [mysql, redis]
     volumes:
       - ./storage:/app/storage
@@ -649,89 +649,59 @@ flowchart TD
 
 ```text
 digital-human/
-  apps/
-    web/
-      package.json
-      vite.config.ts
-      src/
-        pages/
-          tasks/
-          result/
-        routes/
-        components/
-        features/
-          task-create/
-          script-confirm/
-          generation-progress/
-          result-preview/
-        lib/
-          api-client/
-          validators/
-        types/
-    api/
-      pyproject.toml
-      alembic.ini
-      app/
-        main.py
-        api/
-          routers/
-            tasks.py
-            segments.py
-            profiles.py
-            artifacts.py
-            risk_checks.py
-        core/
-          config.py
-          logging.py
-          security.py
-        db/
-          session.py
-          models.py
-          migrations/
-        services/
-          task_service.py
-          script_service.py
-          generation_service.py
-          artifact_service.py
-          risk_service.py
-        workers/
-          celery_app.py
-          generation_worker.py
-        adapters/
-          ffmpeg_adapter.py
-          whisper_adapter.py
-          cozyvoice_adapter.py
-          heygem_adapter.py
-          distributor_adapter.py
-          risk_check_adapter.py
-        domain/
+  Frontend/
+    package.json
+    vite.config.ts
+    src/
+      pages/
+      routes/
+      components/
+      lib/
+        api-client/
+      types/
+  Backend/
+    pyproject.toml
+    alembic.ini
+    app/
+      main.py
+      api/
+        routers/
           tasks.py
-          scripts.py
+          segments.py
+          profiles.py
           artifacts.py
-          risks.py
-        repositories/
-          task_repository.py
-          segment_repository.py
-          artifact_repository.py
-          risk_repository.py
-        schemas/
-          task_schema.py
-          segment_schema.py
-          artifact_schema.py
-          risk_schema.py
-      tests/
+          risk_checks.py
+      core/
+        config.py
+        logging.py
+      db/
+        session.py
+        models.py
+        migrations/
+      services/
+        task_service.py
+        segment_service.py
+        profile_service.py
+        risk_service.py
+      workers/
+        celery_app.py
+        tasks.py
+      adapters/
+        ffmpeg.py
+        whisper.py
+        cozyvoice.py
+        heygem.py
+      domain/
+      repositories/
+      schemas/
   storage/
   docs/
-  docker/
-    api.Dockerfile
-    web.Dockerfile
-    worker.Dockerfile
   docker-compose.yml
   .env.example
   README.md
 ```
 
-如果一开始只做 Python MVP，也可以先不拆 `apps/web`，用 FastAPI 返回简单页面或只做 API，等流程稳定后再补完整前端。正式进入前后端联调后，建议按上面的目录拆分，避免页面逻辑、API 编排、Worker 流程混在一起。
+前后端代码包使用 `Frontend/` 和 `Backend/` 顶层目录，方便非技术读者和新协作者快速识别职责边界。后端内部仍保留 `app/api/routers/` 作为 FastAPI 路由分层名称，这里的 `api` 指 HTTP 接口层，不再代表仓库级后端包。
 
 ### 13.1 推荐框架
 

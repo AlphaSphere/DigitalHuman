@@ -44,7 +44,11 @@ export function ResultPage() {
                   <strong>{artifact.meta.label ?? artifact.type}</strong>
                   <span>{artifact.meta.format?.toUpperCase()} · {formatSize(artifact.meta.size_bytes)}</span>
                 </div>
-                <button type="button" className="secondary-button" onClick={() => alert('Mock 下载：后续接真实下载接口')}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => window.open(mockApi.getArtifactDownloadUrl(artifact.id), '_blank')}
+                >
                   下载
                 </button>
               </article>

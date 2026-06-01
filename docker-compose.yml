@@ -1,0 +1,74 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Frontend/Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: .
+      dockerfile: Backend/Dockerfile
+    env_file:
+      - .env.example
+    environment:
+      DATABASE_URL: mysql+pymysql://digital_human:digital_human@mysql:3306/digital_human
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /app/storage
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build:
+      context: .
+      dockerfile: Backend/worker.Dockerfile
+    env_file:
+      - .env.example
+    environment:
+      DATABASE_URL: mysql+pymysql://digital_human:digital_human@mysql:3306/digital_human
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /app/storage
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: digital_human
+      MYSQL_USER: digital_human
+      MYSQL_PASSWORD: digital_human
+      MYSQL_ROOT_PASSWORD: digital_human_root
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-udigital_human", "-pdigital_human"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  mysql-data:

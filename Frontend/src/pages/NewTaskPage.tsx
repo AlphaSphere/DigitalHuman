@@ -61,6 +61,7 @@ export function NewTaskPage() {
         }
 
         return mockApi.createVideoTask({
+          file: values.videoInputMode === 'upload' ? file : null,
           fileName: values.videoInputMode === 'upload' ? file?.name : undefined,
           source_url: values.videoInputMode === 'url' ? values.videoUrl.trim() : undefined,
           aspect_ratio: values.aspectRatio as AspectRatio,

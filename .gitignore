@@ -1,2 +1,7 @@
 .cursor/
 .DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+storage/*
+!storage/.gitkeep
