@@ -70,5 +70,79 @@ services:
     ports:
       - "6379:6379"
 
+  whisper:
+    build:
+      context: .
+      dockerfile: Services/whisper-service/Dockerfile
+    profiles: ["whisper", "models"]
+    env_file:
+      - .env.example
+    environment:
+      STORAGE_ROOT: /app/storage
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-}
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./storage:/app/storage
+
+  cosyvoice:
+    build:
+      context: .
+      dockerfile: Services/cosyvoice-service/Dockerfile
+    profiles: ["cosyvoice", "models"]
+    env_file:
+      - .env.example
+    environment:
+      COSYVOICE_UPSTREAM_URL: ${COSYVOICE_UPSTREAM_URL:-}
+      COSYVOICE_UPSTREAM_MODE: ${COSYVOICE_UPSTREAM_MODE:-official_fastapi}
+      COSYVOICE_COMMAND_TEMPLATE: ${COSYVOICE_COMMAND_TEMPLATE:-}
+      COSYVOICE_MODEL_DIR: ${COSYVOICE_MODEL_DIR:-}
+      COSYVOICE_SFT_SPK_ID: ${COSYVOICE_SFT_SPK_ID:-中文女}
+      COSYVOICE_PROMPT_TEXT: ${COSYVOICE_PROMPT_TEXT:-}
+      COSYVOICE_TARGET_SAMPLE_RATE: ${COSYVOICE_TARGET_SAMPLE_RATE:-22050}
+      COSYVOICE_WORKDIR: ${COSYVOICE_WORKDIR:-}
+      COSYVOICE_TIMEOUT_SECONDS: ${COSYVOICE_TIMEOUT_SECONDS:-600}
+      ALLOW_STUB_OUTPUT: ${ALLOW_MODEL_SERVICE_STUB_OUTPUT:-false}
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./storage:/app/storage
+      - ${COSYVOICE_REPO_PATH:-./external/CosyVoice}:/opt/cosyvoice:ro
+
+  heygem:
+    build:
+      context: .
+      dockerfile: Services/heygem-service/Dockerfile
+    profiles: ["heygem", "models"]
+    env_file:
+      - .env.example
+    environment:
+      HEYGEM_UPSTREAM_URL: ${HEYGEM_UPSTREAM_URL:-}
+      HEYGEM_VIDEO_BASE_URL: ${HEYGEM_VIDEO_BASE_URL:-}
+      HEYGEM_COMMAND_TEMPLATE: ${HEYGEM_COMMAND_TEMPLATE:-}
+      HEYGEM_DEFAULT_VIDEO_PATH: ${HEYGEM_DEFAULT_VIDEO_PATH:-}
+      HEYGEM_AVATAR_PROFILE_MAP: ${HEYGEM_AVATAR_PROFILE_MAP:-}
+      HEYGEM_RESULT_DIR: ${HEYGEM_RESULT_DIR:-}
+      HEYGEM_POLL_INTERVAL_SECONDS: ${HEYGEM_POLL_INTERVAL_SECONDS:-5}
+      HEYGEM_POLL_TIMEOUT_SECONDS: ${HEYGEM_POLL_TIMEOUT_SECONDS:-1800}
+      HEYGEM_WORKDIR: ${HEYGEM_WORKDIR:-}
+      HEYGEM_TIMEOUT_SECONDS: ${HEYGEM_TIMEOUT_SECONDS:-1800}
+      ALLOW_STUB_OUTPUT: ${ALLOW_MODEL_SERVICE_STUB_OUTPUT:-false}
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./storage:/app/storage
+      - ${HEYGEM_REPO_PATH:-./external/HeyGem.ai}:/opt/heygem:ro
+      - ${HEYGEM_DATA_PATH:-./external/duix_avatar_data}:/duix_avatar_data
+
+  distributor:
+    image: python:3.12-slim
+    profiles: ["distribution"]
+    command: ["sh", "-lc", "echo '请在这里安装并配置 dreammis/social-auto-upload sau CLI' && sleep infinity"]
+    volumes:
+      - ./storage:/app/storage
+
 volumes:
   mysql-data:

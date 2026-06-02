@@ -4,6 +4,8 @@ import type {
   AvatarProfile,
   GenerationVoiceMode,
   GenerationVideoMode,
+  DistributionRecord,
+  MusicTrack,
   PrePublishCheckInput,
   RiskCheck,
   RiskStage,
@@ -52,6 +54,8 @@ interface SaveGenerationConfigInput {
   authorization_confirmed: boolean
   aspect_ratio: AspectRatio
   subtitle_style: SubtitleStyle
+  background_music_path?: string | null
+  background_music_volume?: number
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
@@ -196,6 +200,8 @@ export const mockApi = {
         authorization_confirmed: input.authorization_confirmed,
         aspect_ratio: input.aspect_ratio,
         subtitle_style: input.subtitle_style,
+        background_music_path: input.background_music_path,
+        background_music_volume: input.background_music_volume,
       }),
     )
     if (input.custom_voice_file) formData.append('custom_voice_file', input.custom_voice_file, input.custom_voice_file.name)
@@ -233,5 +239,30 @@ export const mockApi = {
 
   async runPrePublishCheck(taskId: string, input: PrePublishCheckInput): Promise<RiskCheck> {
     return request<RiskCheck>(`/tasks/${taskId}/pre-publish-check`, { method: 'POST', body: JSON.stringify(input) })
+  },
+
+  async getMusicTracks(): Promise<MusicTrack[]> {
+    return request<MusicTrack[]>('/music-tracks')
+  },
+
+  async getDistributions(taskId: string): Promise<DistributionRecord[]> {
+    return request<DistributionRecord[]>(`/tasks/${taskId}/distributions`)
+  },
+
+  async createDistribution(
+    taskId: string,
+    input: Pick<DistributionRecord, 'platform' | 'title' | 'description' | 'tags'>,
+  ): Promise<DistributionRecord> {
+    return request<DistributionRecord>(`/tasks/${taskId}/distributions`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
+
+  async retryDistribution(distributionId: string): Promise<DistributionRecord> {
+    return request<DistributionRecord>(`/distributions/${distributionId}/retry`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
   },
 }

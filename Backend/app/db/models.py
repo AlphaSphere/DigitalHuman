@@ -21,6 +21,8 @@ class TaskModel(Base, TimestampMixin):
     voice_profile_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("voice_profiles.id"))
     avatar_profile_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("avatar_profiles.id"))
     subtitle_style: Mapped[dict | None] = mapped_column(JSON)
+    background_music_path: Mapped[str | None] = mapped_column(String(512))
+    background_music_volume: Mapped[float | None] = mapped_column(Float)
     error_code: Mapped[str | None] = mapped_column(String(64))
     error_message: Mapped[str | None] = mapped_column(String(512))
 
@@ -28,6 +30,9 @@ class TaskModel(Base, TimestampMixin):
     artifacts: Mapped[list["ArtifactModel"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     risk_checks: Mapped[list["RiskCheckModel"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     authorization_records: Mapped[list["AuthorizationRecordModel"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
+    )
+    distribution_records: Mapped[list["DistributionRecordModel"]] = relationship(
         back_populates="task", cascade="all, delete-orphan"
     )
 
@@ -125,3 +130,20 @@ class AuthorizationRecordModel(Base):
     confirmed_at: Mapped[object] = mapped_column(DateTime, nullable=False)
 
     task: Mapped[TaskModel] = relationship(back_populates="authorization_records")
+
+
+class DistributionRecordModel(Base, TimestampMixin):
+    __tablename__ = "distribution_records"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), ForeignKey("tasks.id"), nullable=False, index=True)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    external_url: Mapped[str | None] = mapped_column(String(512))
+    error_message: Mapped[str | None] = mapped_column(String(512))
+    raw_result: Mapped[dict | None] = mapped_column(JSON)
+
+    task: Mapped[TaskModel] = relationship(back_populates="distribution_records")

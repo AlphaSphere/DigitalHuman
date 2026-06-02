@@ -80,6 +80,8 @@ class SaveGenerationConfigRequest(BaseModel):
     authorization_confirmed: bool = False
     aspect_ratio: AspectRatio = "9:16"
     subtitle_style: SubtitleStyle
+    background_music_path: str | None = None
+    background_music_volume: float = Field(default=0.18, ge=0, le=1)
 
 
 class RiskFindingOut(BaseModel):
@@ -134,9 +136,38 @@ class AvatarProfileOut(BaseModel):
 
 
 class PrePublishCheckInput(BaseModel):
-    platform: Literal["douyin", "xiaohongshu", "bilibili", "wechat_channels"]
+    platform: Literal["douyin", "xiaohongshu", "bilibili", "wechat_channels", "kuaishou", "tiktok", "youtube"]
     title: str
     description: str
     tags: list[str]
     ai_label_confirmed: bool
     cover_artifact_id: str | None = None
+
+
+class MusicTrackOut(BaseModel):
+    id: str
+    name: str
+    path: str
+    source: str = "CC0-1.0 Music"
+    duration: float | None = None
+
+
+class CreateDistributionRequest(BaseModel):
+    platform: Literal["douyin", "xiaohongshu", "bilibili", "wechat_channels", "kuaishou", "tiktok", "youtube"]
+    title: str = Field(min_length=1, max_length=100)
+    description: str = ""
+    tags: list[str] = []
+
+
+class DistributionRecordOut(BaseModel):
+    id: str
+    task_id: str
+    platform: str
+    title: str
+    description: str | None = None
+    tags: list[str]
+    status: str
+    external_url: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime

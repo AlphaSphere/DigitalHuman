@@ -134,6 +134,8 @@ def save_generation_config(db: Session, task_id: str, payload: SaveGenerationCon
     )
     task.aspect_ratio = payload.aspect_ratio
     task.subtitle_style = payload.subtitle_style.model_dump()
+    task.background_music_path = payload.background_music_path
+    task.background_music_volume = payload.background_music_volume
     task.updated_at = datetime.utcnow()
 
     db.execute(delete(AuthorizationRecordModel).where(AuthorizationRecordModel.task_id == task_id))

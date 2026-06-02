@@ -284,6 +284,8 @@ MVP 可以先不启用账号系统。后续接入多用户时建议：
 | `app/api/routers/profiles.py` | 获取音色列表、数字人列表。 | `task_service.py` 或独立 `profile_service.py` |
 | `app/api/routers/artifacts.py` | 查询产物列表、下载产物。 | `artifact_service.py` |
 | `app/api/routers/risk_checks.py` | 查询风险结果、人工确认风险、发布前合规检查。 | `risk_service.py` |
+| `app/api/routers/music.py` | 查询 CC0 背景音乐素材。 | `music_service.py` |
+| `app/api/routers/distributions.py` | 创建、查询和重试平台分发任务。 | `distribution_service.py` |
 
 调用边界：
 
@@ -291,6 +293,30 @@ MVP 可以先不启用账号系统。后续接入多用户时建议：
 - Service 负责业务编排，例如创建任务、保存文案、投递 Celery 任务。
 - Repository 负责 SQLAlchemy 查询，避免业务代码散落 SQL 细节。
 - Worker 执行长耗时任务后，通过 Repository 更新任务状态和产物记录。
+
+新增真实工具接入接口：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/music-tracks` | 返回后端本地 CC0-1.0 Music 音乐目录中的可选曲目。 |
+| `POST /api/tasks/{task_id}/distributions` | 调用 social-auto-upload 创建平台分发任务。 |
+| `GET /api/tasks/{task_id}/distributions` | 查询任务的分发记录和平台返回结果。 |
+| `POST /api/distributions/{distribution_id}/retry` | 对失败的分发记录重新投递。 |
+
+模型服务内部接口不暴露给前端，由 Worker 通过适配器调用：
+
+| 服务 | 接口 | 请求核心字段 | 返回核心字段 |
+| --- | --- | --- | --- |
+| Whisper Service | `POST /transcribe` | `path`、`language`、`model` | `segments[]`，包含 `start_time`、`end_time`、`text`、`confidence` |
+| CosyVoice Service | `POST /synthesize` | `task_id`、`text`、`voice_profile_id`、`custom_voice_path`、`output_path` | `audio_path` |
+| HeyGem Service | `POST /generate` | `task_id`、`audio_path`、`avatar_profile_id`、`output_path` | `video_path` |
+
+真实生成配置说明：
+
+- CosyVoice 官方 FastAPI 会返回原始 PCM 音频流，包装服务会转成标准 WAV 写入 `output_path`。
+- `custom_voice_path` 存在时，CosyVoice 包装服务优先使用零样本 / 跨语种推理；没有自定义音色时使用 `voice_profile_id` 或 `COSYVOICE_SFT_SPK_ID` 作为预设音色。
+- HeyGem 官方接口需要已有数字人视频素材，包装服务会优先把 `avatar_profile_id` 当作视频路径，其次读取 `HEYGEM_AVATAR_PROFILE_MAP`，最后使用 `HEYGEM_DEFAULT_VIDEO_PATH`。
+- HeyGem 合成完成后，包装服务会优先从查询结果中解析视频路径；如果官方接口没有返回明确路径，则从 `HEYGEM_RESULT_DIR` 中按任务 code 查找输出 MP4。
 
 ## 6. 接口详情
 

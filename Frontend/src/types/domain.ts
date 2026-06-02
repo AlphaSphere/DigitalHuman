@@ -69,6 +69,8 @@ export interface Task {
   voice_profile_id?: string | null
   avatar_profile_id?: string | null
   subtitle_style?: SubtitleStyle | null
+  background_music_path?: string | null
+  background_music_volume?: number | null
   error_code?: string | null
   error_message?: string | null
   created_at: string
@@ -171,10 +173,32 @@ export interface AuthorizationRecord {
 }
 
 export interface PrePublishCheckInput {
-  platform: 'douyin' | 'xiaohongshu' | 'bilibili' | 'wechat_channels'
+  platform: 'douyin' | 'xiaohongshu' | 'bilibili' | 'wechat_channels' | 'kuaishou' | 'tiktok' | 'youtube'
   title: string
   description: string
   tags: string[]
   ai_label_confirmed: boolean
   cover_artifact_id?: string
+}
+
+export interface MusicTrack {
+  id: string
+  name: string
+  path: string
+  source: string
+  duration?: number | null
+}
+
+export interface DistributionRecord {
+  id: string
+  task_id: string
+  platform: PrePublishCheckInput['platform']
+  title: string
+  description?: string | null
+  tags: string[]
+  status: 'pending' | 'running' | 'success' | 'failed'
+  external_url?: string | null
+  error_message?: string | null
+  created_at: string
+  updated_at: string
 }

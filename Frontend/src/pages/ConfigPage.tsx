@@ -13,6 +13,7 @@ export function ConfigPage() {
   const taskQuery = useQuery({ queryKey: ['task', taskId], queryFn: () => mockApi.getTask(taskId) })
   const voiceQuery = useQuery({ queryKey: ['voiceProfiles'], queryFn: mockApi.getVoiceProfiles })
   const avatarQuery = useQuery({ queryKey: ['avatarProfiles'], queryFn: mockApi.getAvatarProfiles })
+  const musicQuery = useQuery({ queryKey: ['musicTracks'], queryFn: mockApi.getMusicTracks })
 
   const [voiceId, setVoiceId] = useState('voice_default_female')
   const [generationVoiceMode, setGenerationVoiceMode] = useState<GenerationVoiceMode>('uploaded_voice')
@@ -21,6 +22,8 @@ export function ConfigPage() {
   const [generationVideoMode, setGenerationVideoMode] = useState<GenerationVideoMode>('uploaded_video')
   const [customVideoFile, setCustomVideoFile] = useState<File | null>(null)
   const [authorizationConfirmed, setAuthorizationConfirmed] = useState(false)
+  const [backgroundMusicPath, setBackgroundMusicPath] = useState('')
+  const [backgroundMusicVolume, setBackgroundMusicVolume] = useState(0.18)
   const [hasTriedSubmit, setHasTriedSubmit] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>({
@@ -46,6 +49,8 @@ export function ConfigPage() {
         authorization_confirmed: authorizationConfirmed,
         aspect_ratio: taskQuery.data?.aspect_ratio ?? '9:16',
         subtitle_style: subtitleStyle,
+        background_music_path: backgroundMusicPath || null,
+        background_music_volume: backgroundMusicVolume,
       })
     },
     onError: (err) => setError(err instanceof Error ? err.message : '保存配置失败'),
@@ -60,7 +65,7 @@ export function ConfigPage() {
     onError: (err) => setError(err instanceof Error ? err.message : '启动生成失败'),
   })
 
-  if (taskQuery.isLoading || voiceQuery.isLoading || avatarQuery.isLoading) {
+  if (taskQuery.isLoading || voiceQuery.isLoading || avatarQuery.isLoading || musicQuery.isLoading) {
     return <div className="page">正在加载生成配置...</div>
   }
 
@@ -254,6 +259,32 @@ export function ConfigPage() {
               onChange={(event) => setSubtitleStyle({ ...subtitleStyle, color: event.target.value })}
             />
           </label>
+          <h2>背景音乐</h2>
+          <label className="field-stack">
+            CC0 音乐素材
+            <select value={backgroundMusicPath} onChange={(event) => setBackgroundMusicPath(event.target.value)}>
+              <option value="">不添加背景音乐</option>
+              {musicQuery.data?.map((track) => (
+                <option key={track.path} value={track.path}>
+                  {track.name}
+                </option>
+              ))}
+            </select>
+            <span className="muted">请把 CC0-1.0 Music 文件放到后端配置的音乐目录，系统会自动扫描。</span>
+          </label>
+          {backgroundMusicPath ? (
+            <label className="field-row">
+              音乐音量
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={backgroundMusicVolume}
+                onChange={(event) => setBackgroundMusicVolume(Number(event.target.value))}
+              />
+            </label>
+          ) : null}
           {needsMaterialAuthorization ? (
             <label className="check-row material-auth-check">
               <input

@@ -12,6 +12,9 @@ const platforms: Array<{ value: PrePublishCheckInput['platform']; label: string 
   { value: 'xiaohongshu', label: '小红书' },
   { value: 'bilibili', label: 'B 站' },
   { value: 'wechat_channels', label: '视频号' },
+  { value: 'kuaishou', label: '快手' },
+  { value: 'tiktok', label: 'TikTok' },
+  { value: 'youtube', label: 'YouTube' },
 ]
 
 export function PrePublishPage() {
@@ -30,6 +33,10 @@ export function PrePublishPage() {
   const riskQuery = useQuery({
     queryKey: ['riskChecks', taskId, 'pre_publish'],
     queryFn: () => mockApi.getRiskChecks(taskId, 'pre_publish'),
+  })
+  const distributionQuery = useQuery({
+    queryKey: ['distributions', taskId],
+    queryFn: () => mockApi.getDistributions(taskId),
   })
 
   const latestRiskCheck = activeRiskCheck ?? riskQuery.data?.[0] ?? null
@@ -67,6 +74,30 @@ export function PrePublishPage() {
       queryClient.invalidateQueries({ queryKey: ['riskChecks', taskId] })
     },
     onError: (err) => setError(err instanceof Error ? err.message : '确认失败'),
+  })
+
+  const distributeMutation = useMutation({
+    mutationFn: () =>
+      mockApi.createDistribution(taskId, {
+        platform,
+        title,
+        description,
+        tags: tags
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+      }),
+    onSuccess: () => {
+      setError(null)
+      queryClient.invalidateQueries({ queryKey: ['distributions', taskId] })
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : '分发任务创建失败'),
+  })
+
+  const retryDistributionMutation = useMutation({
+    mutationFn: (distributionId: string) => mockApi.retryDistribution(distributionId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['distributions', taskId] }),
+    onError: (err) => setError(err instanceof Error ? err.message : '分发重试失败'),
   })
 
   if (taskQuery.isLoading || riskQuery.isLoading) {
@@ -149,6 +180,30 @@ export function PrePublishPage() {
           ) : null}
           {isBlocked ? <p className="form-error">当前平台禁止直接发布，请修改发布信息后重新检查。</p> : null}
           {error ? <p className="form-error">{error}</p> : null}
+          <h2>分发记录</h2>
+          <div className="artifact-list">
+            {distributionQuery.data?.length ? (
+              distributionQuery.data.map((record) => (
+                <article key={record.id} className="artifact-card">
+                  <div>
+                    <strong>{record.platform} · {record.status}</strong>
+                    <span>{record.external_url ?? record.error_message ?? record.title}</span>
+                  </div>
+                  {record.status === 'failed' ? (
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => retryDistributionMutation.mutate(record.id)}
+                    >
+                      重试
+                    </button>
+                  ) : null}
+                </article>
+              ))
+            ) : (
+              <div className="empty-card">通过发布前检查后，可以创建平台分发任务。</div>
+            )}
+          </div>
         </aside>
       </div>
 
@@ -164,8 +219,13 @@ export function PrePublishPage() {
             {confirmMutation.isPending ? '确认中...' : '确认并继续发布'}
           </button>
         ) : (
-          <button className="primary-button" type="button" disabled={!canPublish}>
-            {canPublish ? '可以继续发布' : '等待检查通过'}
+          <button
+            className="primary-button"
+            type="button"
+            disabled={!canPublish || distributeMutation.isPending}
+            onClick={() => distributeMutation.mutate()}
+          >
+            {distributeMutation.isPending ? '创建分发中...' : canPublish ? '发布到平台' : '等待检查通过'}
           </button>
         )}
       </footer>

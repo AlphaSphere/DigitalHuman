@@ -1,6 +1,7 @@
 from app.db.models import (
     ArtifactModel,
     AvatarProfileModel,
+    DistributionRecordModel,
     RiskCheckModel,
     RiskFindingModel,
     ScriptSegmentModel,
@@ -25,6 +26,8 @@ def task_to_dict(task: TaskModel) -> dict:
         "voice_profile_id": task.voice_profile_id,
         "avatar_profile_id": task.avatar_profile_id,
         "subtitle_style": task.subtitle_style,
+        "background_music_path": task.background_music_path,
+        "background_music_volume": task.background_music_volume,
         "error_code": task.error_code,
         "error_message": task.error_message,
         "created_at": task.created_at,
@@ -95,3 +98,19 @@ def voice_profile_to_dict(voice: VoiceProfileModel) -> dict:
 
 def avatar_profile_to_dict(avatar: AvatarProfileModel) -> dict:
     return {"id": avatar.id, "name": avatar.name, "provider": avatar.provider, "config": avatar.config}
+
+
+def distribution_to_dict(record: DistributionRecordModel) -> dict:
+    return {
+        "id": record.id,
+        "task_id": record.task_id,
+        "platform": record.platform,
+        "title": record.title,
+        "description": record.description,
+        "tags": record.tags,
+        "status": record.status,
+        "external_url": record.external_url,
+        "error_message": record.error_message,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
