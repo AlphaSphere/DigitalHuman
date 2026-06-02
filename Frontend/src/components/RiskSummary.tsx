@@ -1,5 +1,9 @@
+/**
+ * 用途：汇总展示一次风险检查的整体结论与统计指标。
+ */
 import type { RiskCheck, RiskStatus } from '../types/domain'
 
+/** 各风险状态对应的标题与说明文案。 */
 const summaryCopy: Record<RiskStatus, { title: string; description: string }> = {
   passed: {
     title: '未发现明显风险',
@@ -20,9 +24,20 @@ const summaryCopy: Record<RiskStatus, { title: string; description: string }> = 
 }
 
 interface RiskSummaryProps {
+  /** 可选的风险检查记录，缺省时展示等待态 */
   riskCheck?: RiskCheck
 }
 
+/**
+ * 风险检查摘要面板。
+ *
+ * @param props.riskCheck - 后端返回的 RiskCheck，undefined 时显示等待提示
+ * @returns section.risk-summary 元素
+ *
+ * 逻辑：
+ * - 无 riskCheck 时渲染 info 态占位；
+ * - 有数据时按 risk_status 选择 copy 与 CSS 类，并展示命中数/等级/审核来源。
+ */
 export function RiskSummary({ riskCheck }: RiskSummaryProps) {
   if (!riskCheck) {
     return (

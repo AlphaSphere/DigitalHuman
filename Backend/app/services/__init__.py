@@ -1,1 +1,5 @@
-"""Business service modules."""
+"""业务服务层模块包。
+
+本包聚合视频任务全流程中的领域逻辑，与 API 路由解耦，供 routers 与 Celery workers 调用。
+典型链路：任务创建 → ASR/文案解析 → 风险审核 → 生成配置 → Celery 流水线 → 分发。
+"""

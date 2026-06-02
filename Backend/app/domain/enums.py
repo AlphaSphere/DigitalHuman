@@ -1,13 +1,21 @@
+"""
+用途：数字人任务流水线中的领域枚举定义，作为状态机、风控阶段与产物类型的唯一字符串来源。
+"""
+
 from enum import StrEnum
 
 
 class ScriptSource(StrEnum):
+    """用途：标识任务文案的来源渠道，决定后续 ASR 或粘贴解析分支。"""
+
     video_asr = "video_asr"
     pasted_subtitle = "pasted_subtitle"
     pasted_script = "pasted_script"
 
 
 class TaskStatus(StrEnum):
+    """用途：任务主状态机节点，贯穿上传、识别、生成、合规与成片全流程。"""
+
     uploaded = "uploaded"
     audio_extracted = "audio_extracted"
     transcribing = "transcribing"
@@ -34,6 +42,8 @@ class TaskStatus(StrEnum):
 
 
 class SegmentSource(StrEnum):
+    """用途：单条脚本片段的产出方式，用于审计与重跑策略。"""
+
     whisper = "whisper"
     pasted_subtitle = "pasted_subtitle"
     pasted_script = "pasted_script"
@@ -41,11 +51,15 @@ class SegmentSource(StrEnum):
 
 
 class ScriptGenerationMode(StrEnum):
+    """用途：生成阶段按整段脚本还是按时间轴分段驱动 TTS/口播。"""
+
     full_script = "full_script"
     timed_segments = "timed_segments"
 
 
 class ArtifactType(StrEnum):
+    """用途：任务关联中间产物与成片的类型标签，供存储与下载 API 过滤。"""
+
     source_video = "source_video"
     audio = "audio"
     transcript = "transcript"
@@ -58,22 +72,30 @@ class ArtifactType(StrEnum):
 
 
 class AspectRatio(StrEnum):
+    """用途：视频画幅比例，影响数字人模板与合成参数。"""
+
     portrait = "9:16"
     landscape = "16:9"
     square = "1:1"
 
 
 class GenerationVoiceMode(StrEnum):
+    """用途：配音使用用户上传样本还是系统预设音色。"""
+
     uploaded_voice = "uploaded_voice"
     preset_voice = "preset_voice"
 
 
 class GenerationVideoMode(StrEnum):
+    """用途：口播视频使用用户上传素材还是预设数字人形象。"""
+
     uploaded_video = "uploaded_video"
     preset_avatar = "preset_avatar"
 
 
 class RiskStatus(StrEnum):
+    """用途：单次风控检查的结论状态，驱动任务是否可继续或需人工确认。"""
+
     passed = "passed"
     warning = "warning"
     blocked = "blocked"
@@ -81,12 +103,16 @@ class RiskStatus(StrEnum):
 
 
 class RiskLevel(StrEnum):
+    """用途：风险严重度分级，用于前端展示与拦截策略。"""
+
     low = "low"
     medium = "medium"
     high = "high"
 
 
 class RiskStage(StrEnum):
+    """用途：风控发生的流水线阶段，与 TaskStatus 中检查节点对应。"""
+
     input = "input"
     script = "script"
     audio = "audio"
@@ -96,6 +122,8 @@ class RiskStage(StrEnum):
 
 
 class RiskType(StrEnum):
+    """用途：具体风险类别，便于聚合统计与给出修改建议。"""
+
     copyright = "copyright"
     portrait = "portrait"
     voice = "voice"
@@ -105,12 +133,16 @@ class RiskType(StrEnum):
 
 
 class ReviewedBy(StrEnum):
+    """用途：风控记录的确认主体（系统自动、用户或管理员）。"""
+
     system = "system"
     user = "user"
     admin = "admin"
 
 
 class AuthorizationAssetType(StrEnum):
+    """用途：用户授权确认所针对的资产类型（视频、文案、声音等）。"""
+
     video = "video"
     script = "script"
     voice = "voice"
@@ -119,6 +151,8 @@ class AuthorizationAssetType(StrEnum):
 
 
 class AuthorizationSource(StrEnum):
+    """用途：被授权资产的来源分类，满足合规留痕。"""
+
     user_upload = "user_upload"
     preset = "preset"
     third_party = "third_party"

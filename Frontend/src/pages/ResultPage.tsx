@@ -1,9 +1,32 @@
+/**
+ * 用途：成片结果页，展示最终视频预览、产物下载与任务摘要，入口至发布前检查。
+ */
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { StatusBadge } from '../components/StatusBadge'
 import { StepNav } from '../components/StepNav'
 import { getStatusMessage, mockApi } from '../lib/api-client/mockApi'
 
+/**
+ * 将字节数格式化为 MB 字符串。
+ *
+ * @param size - 文件大小（字节），可选
+ * @returns 保留一位小数的 MB 文案，缺省时返回「未知大小」
+ */
+function formatSize(size?: number) {
+  if (!size) return '未知大小'
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+/**
+ * 生成完成后的结果展示页面。
+ *
+ * @returns 视频预览区、产物列表与任务元信息
+ *
+ * 逻辑：
+ * - 并行加载 task 与 artifacts；
+ * - 下载按钮通过 getArtifactDownloadUrl 新窗口打开。
+ */
 export function ResultPage() {
   const { taskId = '' } = useParams()
   const taskQuery = useQuery({ queryKey: ['task', taskId], queryFn: () => mockApi.getTask(taskId) })
@@ -86,9 +109,4 @@ export function ResultPage() {
       </footer>
     </section>
   )
-}
-
-function formatSize(size?: number) {
-  if (!size) return '未知大小'
-  return `${(size / 1024 / 1024).toFixed(1)} MB`
 }

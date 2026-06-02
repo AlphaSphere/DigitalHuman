@@ -1,1 +1,3 @@
-"""Domain enums and status helpers."""
+"""
+用途：领域层包入口，导出任务状态枚举与进度文案等纯领域概念，与 ORM/API 层解耦。
+"""

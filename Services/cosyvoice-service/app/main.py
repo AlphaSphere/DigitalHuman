@@ -1,3 +1,9 @@
+"""CosyVoice 语音合成微服务入口。
+
+用途：封装多种 TTS 调用方式（上游 HTTP、官方 FastAPI、本地模型、Shell 命令），
+对外提供统一的 /synthesize 合成接口。
+"""
+
 import shlex
 import subprocess
 import wave
@@ -11,6 +17,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """CosyVoice 服务运行配置，从环境变量与 .env 文件加载。
+
+    用途：控制上游地址、本地模型路径、命令模板、默认说话人与超时等参数。
+    """
+
     cosyvoice_upstream_url: str | None = None
     cosyvoice_upstream_mode: str = "digitalhuman"
     cosyvoice_command_template: str | None = None
@@ -34,10 +45,28 @@ class Settings(BaseSettings):
     )
     @classmethod
     def empty_string_to_none(cls, value):
+        """将空字符串规范化为 None。
+
+        用途：允许通过空环境变量表示「未配置该项」。
+
+        参数:
+            value: 原始配置值。
+
+        返回:
+            非空字符串原样返回，空字符串转为 None。
+
+        逻辑:
+            在 Pydantic 校验前执行，便于下游分支判断使用哪种合成模式。
+        """
         return None if value == "" else value
 
 
 class SynthesizeRequest(BaseModel):
+    """语音合成请求体。
+
+    用途：描述任务 ID、待合成文本、音色配置与输出路径。
+    """
+
     task_id: str = Field(..., min_length=1)
     text: str = Field(..., min_length=1)
     voice_profile_id: str | None = None
@@ -46,6 +75,11 @@ class SynthesizeRequest(BaseModel):
 
 
 class SynthesizeResponse(BaseModel):
+    """语音合成响应体。
+
+    用途：返回生成音频在存储中的路径。
+    """
+
     audio_path: str
 
 
@@ -56,6 +90,16 @@ _local_model: Any | None = None
 
 @app.get("/health")
 def health() -> dict:
+    """健康检查端点。
+
+    用途：供编排系统探测服务状态及当前合成模式。
+
+    返回:
+        包含 status、service 名称与 mode（upstream-http/local-model/command/unconfigured）的字典。
+
+    逻辑:
+        按配置优先级推断当前生效的合成后端，不实际调用模型。
+    """
     mode = "upstream-http" if settings.cosyvoice_upstream_url else "local-model"
     if not settings.cosyvoice_upstream_url and not settings.cosyvoice_model_dir:
         mode = "command"
@@ -66,6 +110,21 @@ def health() -> dict:
 
 @app.post("/synthesize", response_model=SynthesizeResponse)
 def synthesize(payload: SynthesizeRequest) -> SynthesizeResponse:
+    """将文本合成为语音并写入指定路径。
+
+    用途：主业务入口，按配置自动选择上游/本地/命令/stub 合成方式。
+
+    参数:
+        payload: 包含文本、音色与输出路径的合成请求。
+
+    返回:
+        含 audio_path 的 SynthesizeResponse。
+
+    逻辑:
+        1. 确保输出目录存在；
+        2. 按 upstream → local_model → command → stub 优先级路由；
+        3. 均未配置且未允许 stub 时返回 503。
+    """
     output_path = Path(payload.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -83,6 +142,19 @@ def synthesize(payload: SynthesizeRequest) -> SynthesizeResponse:
 
 
 def _synthesize_upstream(payload: SynthesizeRequest) -> SynthesizeResponse:
+    """通过 HTTP 上游服务执行语音合成。
+
+    用途：将合成请求转发至外部 CosyVoice 或 DigitalHuman 兼容上游。
+
+    参数:
+        payload: 合成请求体。
+
+    返回:
+        上游返回的 audio_path 封装为 SynthesizeResponse。
+
+    逻辑:
+        official_fastapi 模式走专用 multipart 流程；否则 POST JSON 到 /synthesize 并解析路径字段。
+    """
     assert settings.cosyvoice_upstream_url
     if settings.cosyvoice_upstream_mode == "official_fastapi":
         return _synthesize_official_fastapi(payload)
@@ -100,6 +172,22 @@ def _synthesize_upstream(payload: SynthesizeRequest) -> SynthesizeResponse:
 
 
 def _synthesize_official_fastapi(payload: SynthesizeRequest) -> SynthesizeResponse:
+    """调用 CosyVoice 官方 FastAPI 推理端点。
+
+    用途：对接官方 zero_shot / cross_lingual / sft 三类接口，并将 PCM 转为 WAV。
+
+    参数:
+        payload: 合成请求体。
+
+    返回:
+        写入本地 WAV 后的 SynthesizeResponse。
+
+    逻辑:
+        1. 构造 endpoint、form data 与可选 prompt_wav 文件；
+        2. POST 上游并读取 PCM 字节流；
+        3. finally 中关闭已打开的文件句柄；
+        4. 调用 _write_pcm_wav 落盘。
+    """
     output_path = Path(payload.output_path)
     endpoint, data, files = _official_fastapi_payload(payload)
     try:
@@ -122,6 +210,20 @@ def _synthesize_official_fastapi(payload: SynthesizeRequest) -> SynthesizeRespon
 
 
 def _official_fastapi_payload(payload: SynthesizeRequest):
+    """构造官方 FastAPI 请求的 endpoint、表单字段与文件附件。
+
+    用途：根据是否提供 custom_voice_path 与 prompt_text 选择推理模式。
+
+    参数:
+        payload: 合成请求体。
+
+    返回:
+        (endpoint 路径, form data 字典, files 字典) 三元组。
+
+    逻辑:
+        有自定义音色样本时优先 zero_shot（需 prompt_text）或 cross_lingual；
+        否则走 SFT 预设说话人 inference_sft。
+    """
     if payload.custom_voice_path:
         prompt_wav = Path(payload.custom_voice_path)
         if not prompt_wav.exists():
@@ -134,6 +236,21 @@ def _official_fastapi_payload(payload: SynthesizeRequest):
 
 
 def _synthesize_local_model(payload: SynthesizeRequest, output_path: Path) -> SynthesizeResponse:
+    """使用进程内加载的 CosyVoice 本地模型推理。
+
+    用途：在无上游 HTTP 时直接调用 cosyvoice Python SDK 生成音频。
+
+    参数:
+        payload: 合成请求体。
+        output_path: 音频输出路径。
+
+    返回:
+        本地保存后的 SynthesizeResponse。
+
+    逻辑:
+        按 custom_voice_path 是否存在选择 zero_shot/cross_lingual/sft；
+        调用 _save_model_output 将 tensor 片段拼接并写入文件。
+    """
     model = _load_local_model()
     try:
         if payload.custom_voice_path:
@@ -155,6 +272,16 @@ def _synthesize_local_model(payload: SynthesizeRequest, output_path: Path) -> Sy
 
 
 def _load_local_model():
+    """懒加载并缓存 CosyVoice AutoModel 实例。
+
+    用途：首次本地推理时加载模型，后续请求复用同一实例。
+
+    返回:
+        已初始化的 CosyVoice AutoModel。
+
+    逻辑:
+        全局 _local_model 非空则直接返回；否则 import AutoModel 并按 model_dir 构造。
+    """
     global _local_model
     if _local_model is not None:
         return _local_model
@@ -170,6 +297,18 @@ def _load_local_model():
 
 
 def _save_model_output(model_output, output_path: Path, sample_rate: int) -> None:
+    """将模型推理输出的 tensor 片段拼接并保存为音频文件。
+
+    用途：统一本地推理结果的落盘格式。
+
+    参数:
+        model_output: 模型返回的可迭代结果，每项含 tts_speech tensor。
+        output_path: 目标音频路径。
+        sample_rate: 采样率，传给 torchaudio.save。
+
+    逻辑:
+        提取各 chunk 的 tts_speech，torch.cat 拼接后写入 output_path；空结果抛 500。
+    """
     try:
         import torch
         import torchaudio
@@ -184,6 +323,22 @@ def _save_model_output(model_output, output_path: Path, sample_rate: int) -> Non
 
 
 def _synthesize_command(payload: SynthesizeRequest, output_path: Path) -> SynthesizeResponse:
+    """通过 Shell 命令模板调用外部 CosyVoice 脚本。
+
+    用途：对接官方仓库 CLI 或自定义合成脚本。
+
+    参数:
+        payload: 合成请求体。
+        output_path: 音频输出路径。
+
+    返回:
+        命令成功且文件存在时的 SynthesizeResponse。
+
+    逻辑:
+        1. 将文本写入同目录 .txt 临时文件；
+        2. format 命令模板并 subprocess.run；
+        3. 校验 output_path 是否生成。
+    """
     text_path = output_path.with_suffix(".txt")
     text_path.write_text(payload.text, encoding="utf-8")
     values = {
@@ -214,6 +369,18 @@ def _synthesize_command(payload: SynthesizeRequest, output_path: Path) -> Synthe
 
 
 def _write_pcm_wav(path: Path, pcm: bytes, sample_rate: int) -> None:
+    """将 16-bit 单声道 PCM 字节流写入标准 WAV 文件。
+
+    用途：适配官方 FastAPI 返回的裸 PCM，供 FFmpeg/HeyGem 读取。
+
+    参数:
+        path: 目标 WAV 路径。
+        pcm: 原始 PCM 字节。
+        sample_rate: 采样率（Hz）。
+
+    逻辑:
+        空 pcm 抛 502；使用 wave 模块写入 mono 16-bit WAV。
+    """
     if not pcm:
         raise HTTPException(status_code=502, detail="CosyVoice 官方 FastAPI 返回空音频")
     with wave.open(str(path), "wb") as wav_file:

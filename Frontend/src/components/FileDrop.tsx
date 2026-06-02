@@ -1,11 +1,31 @@
+/**
+ * 用途：可复用的文件拖拽/点击上传区域组件。
+ */
+
 interface FileDropProps {
+  /** 当前已选文件，未选时为 null */
   file: File | null
+  /** 文件变更回调 */
   onChange: (file: File | null) => void
+  /** input accept 属性，限制可选 MIME 类型 */
   accept?: string
+  /** 未选文件时的主标题文案 */
   title?: string
+  /** 未选文件时的副标题/说明文案 */
   description?: string
 }
 
+/**
+ * 文件选择拖拽区，选中后展示文件名与大小。
+ *
+ * @param props - 文件状态、回调与展示文案
+ * @returns label 包裹的隐藏 file input 与提示文本
+ *
+ * 逻辑：
+ * - 使用 label 扩大点击热区；
+ * - onChange 从 event.target.files 取首个文件或 null；
+ * - 已选文件时展示 MB 大小（保留一位小数）。
+ */
 export function FileDrop({
   file,
   onChange,

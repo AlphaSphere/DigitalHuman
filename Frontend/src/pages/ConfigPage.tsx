@@ -1,3 +1,6 @@
+/**
+ * 用途：生成配置页，选择音色、数字人/自拍视频、字幕样式与背景音乐，保存并启动生成。
+ */
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
@@ -7,6 +10,16 @@ import { StepNav } from '../components/StepNav'
 import { getStatusMessage, mockApi } from '../lib/api-client/mockApi'
 import type { GenerationVideoMode, GenerationVoiceMode, SubtitleStyle } from '../types/domain'
 
+/**
+ * 生成参数配置页面。
+ *
+ * @returns 音色/成片素材/字幕/音乐配置表单与预览侧栏
+ *
+ * 逻辑：
+ * - uploaded_voice/uploaded_video 模式需上传文件并勾选授权；
+ * - submitConfig 校验完整性后 save 或 save+startGenerate；
+ * - startMutation 成功后跳转进度页。
+ */
 export function ConfigPage() {
   const { taskId = '' } = useParams()
   const navigate = useNavigate()

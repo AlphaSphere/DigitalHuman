@@ -1,5 +1,11 @@
+/**
+ * 用途：定义数字人口播工作台前端与后端共享的领域类型与接口形状。
+ */
+
+/** 文案来源：视频 ASR、粘贴字幕或粘贴口播稿。 */
 export type ScriptSource = 'video_asr' | 'pasted_subtitle' | 'pasted_script'
 
+/** 任务生命周期状态，覆盖上传、识别、生成、发布与失败重试全链路。 */
 export type TaskStatus =
   | 'uploaded'
   | 'audio_extracted'
@@ -25,10 +31,13 @@ export type TaskStatus =
   | 'failed'
   | 'retrying'
 
+/** 文案段落来源：Whisper、粘贴或人工编辑。 */
 export type SegmentSource = 'whisper' | 'pasted_subtitle' | 'pasted_script' | 'manual_edit'
 
+/** 文案生成模式：整段口播或按时间轴分段。 */
 export type ScriptGenerationMode = 'full_script' | 'timed_segments'
 
+/** 任务产物类型：源视频、音频、字幕、成片等。 */
 export type ArtifactType =
   | 'source_video'
   | 'audio'
@@ -40,12 +49,18 @@ export type ArtifactType =
   | 'subtitle'
   | 'final_video'
 
+/** 输出视频宽高比。 */
 export type AspectRatio = '9:16' | '16:9' | '1:1'
 
+/** 配音素材模式：上传音色或预设音色。 */
 export type GenerationVoiceMode = 'uploaded_voice' | 'preset_voice'
 
+/** 成片素材模式：上传自拍视频或预设数字人。 */
 export type GenerationVideoMode = 'uploaded_video' | 'preset_avatar'
 
+/**
+ * 字幕样式配置。
+ */
 export interface SubtitleStyle {
   enabled: boolean
   font_size: number
@@ -54,6 +69,9 @@ export interface SubtitleStyle {
   stroke: boolean
 }
 
+/**
+ * 数字人视频生成任务实体。
+ */
 export interface Task {
   id: string
   script_source: ScriptSource
@@ -77,6 +95,9 @@ export interface Task {
   updated_at: string
 }
 
+/**
+ * 单段口播/字幕文案，含时间轴与编辑态文本。
+ */
 export interface ScriptSegment {
   id: string
   task_id: string
@@ -89,6 +110,9 @@ export interface ScriptSegment {
   confidence?: number | null
 }
 
+/**
+ * 预设音色配置（CosyVoice 提供方）。
+ */
 export interface VoiceProfile {
   id: string
   name: string
@@ -101,6 +125,9 @@ export interface VoiceProfile {
   }
 }
 
+/**
+ * 预设数字人形象配置（HeyGem 提供方）。
+ */
 export interface AvatarProfile {
   id: string
   name: string
@@ -112,6 +139,9 @@ export interface AvatarProfile {
   }
 }
 
+/**
+ * 任务中间或最终产物元数据。
+ */
 export interface Artifact {
   id: string
   task_id: string
@@ -126,20 +156,30 @@ export interface Artifact {
   created_at: string
 }
 
+/**
+ * 任务进度展示结构，供进度页 UI 使用。
+ */
 export interface TaskProgress {
   stage: TaskStatus
   percent: number
   message: string
 }
 
+/** 风险检查结论：通过、警告、阻断或需人工复核。 */
 export type RiskStatus = 'passed' | 'warning' | 'blocked' | 'manual_review'
 
+/** 风险严重等级。 */
 export type RiskLevel = 'low' | 'medium' | 'high'
 
+/** 风险检查所处流水线阶段。 */
 export type RiskStage = 'input' | 'script' | 'audio' | 'avatar' | 'compose' | 'pre_publish'
 
+/** 风险类型分类。 */
 export type RiskType = 'copyright' | 'portrait' | 'voice' | 'sensitive_keyword' | 'privacy' | 'platform_rule'
 
+/**
+ * 单条风险命中详情。
+ */
 export interface RiskFinding {
   id: string
   type: RiskType
@@ -149,6 +189,9 @@ export interface RiskFinding {
   suggestion?: string
 }
 
+/**
+ * 一次完整的风险检查结果。
+ */
 export interface RiskCheck {
   id: string
   task_id: string
@@ -162,6 +205,9 @@ export interface RiskCheck {
   created_at: string
 }
 
+/**
+ * 用户素材授权确认记录。
+ */
 export interface AuthorizationRecord {
   id: string
   task_id: string
@@ -172,6 +218,9 @@ export interface AuthorizationRecord {
   confirmed_at: string
 }
 
+/**
+ * 发布前合规检查表单输入。
+ */
 export interface PrePublishCheckInput {
   platform: 'douyin' | 'xiaohongshu' | 'bilibili' | 'wechat_channels' | 'kuaishou' | 'tiktok' | 'youtube'
   title: string
@@ -181,6 +230,9 @@ export interface PrePublishCheckInput {
   cover_artifact_id?: string
 }
 
+/**
+ * 可选背景音乐曲目。
+ */
 export interface MusicTrack {
   id: string
   name: string
@@ -189,6 +241,9 @@ export interface MusicTrack {
   duration?: number | null
 }
 
+/**
+ * 平台分发任务记录。
+ */
 export interface DistributionRecord {
   id: string
   task_id: string

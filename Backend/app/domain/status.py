@@ -1,6 +1,11 @@
+"""
+用途：任务状态与用户可见进度文案的映射，以及前端进度条百分比计算，位于领域层供序列化与 UI 共用。
+"""
+
 from app.domain.enums import TaskStatus
 
 
+# 各 TaskStatus 对应的前端展示文案
 STATUS_MESSAGES: dict[TaskStatus, str] = {
     TaskStatus.uploaded: "视频已上传，等待识别",
     TaskStatus.audio_extracted: "音频提取完成",
@@ -27,6 +32,7 @@ STATUS_MESSAGES: dict[TaskStatus, str] = {
     TaskStatus.retrying: "正在从失败节点重试",
 }
 
+# 参与进度条计算的主线状态顺序（不含失败、重试等旁路状态）
 PROGRESS_ORDER = [
     TaskStatus.uploaded,
     TaskStatus.transcribing,
@@ -45,6 +51,20 @@ PROGRESS_ORDER = [
 
 
 def build_progress(status: TaskStatus) -> dict:
+    """
+    用途：根据当前任务状态生成前端进度对象（阶段、百分比、提示文案）。
+
+    参数：
+        status: 当前 TaskStatus 枚举值
+
+    返回：
+        含 stage、percent、message 的字典
+
+    逻辑：
+        1. failed 状态固定返回 0% 与失败文案，不参与主线序号
+        2. 其它状态在 PROGRESS_ORDER 中查索引；未收录状态按索引 0 处理
+        3. 百分比按索引线性映射到 0–100，completed 对应 100%
+    """
     if status == TaskStatus.failed:
         return {"stage": status, "percent": 0, "message": STATUS_MESSAGES[status]}
     index = PROGRESS_ORDER.index(status) if status in PROGRESS_ORDER else 0

@@ -1,3 +1,7 @@
+"""
+用途：数字人业务核心 ORM 模型定义，映射 tasks、脚本片段、产物、风控与分发等持久化表。
+"""
+
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -5,6 +9,8 @@ from app.db.base import Base, TimestampMixin
 
 
 class TaskModel(Base, TimestampMixin):
+    """用途：视频生成任务主表，承载状态、生成配置、错误信息与一对多关联实体。"""
+
     __tablename__ = "tasks"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -38,6 +44,8 @@ class TaskModel(Base, TimestampMixin):
 
 
 class ScriptSegmentModel(Base):
+    """用途：任务下的脚本/字幕片段，支持 ASR 时间轴与用户编辑文本。"""
+
     __tablename__ = "script_segments"
     __table_args__ = (UniqueConstraint("task_id", "index", name="uq_script_segments_task_index"),)
 
@@ -55,6 +63,8 @@ class ScriptSegmentModel(Base):
 
 
 class ArtifactModel(Base):
+    """用途：任务流水线产生的文件型产物记录（音视频、字幕、成片等）及元数据。"""
+
     __tablename__ = "artifacts"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -68,6 +78,8 @@ class ArtifactModel(Base):
 
 
 class VoiceProfileModel(Base):
+    """用途：系统或预设 TTS 音色配置，供任务 generation 阶段引用。"""
+
     __tablename__ = "voice_profiles"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -78,6 +90,8 @@ class VoiceProfileModel(Base):
 
 
 class AvatarProfileModel(Base):
+    """用途：数字人形象/模板配置，关联 HeyGem 等口播提供方参数。"""
+
     __tablename__ = "avatar_profiles"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -87,6 +101,8 @@ class AvatarProfileModel(Base):
 
 
 class RiskCheckModel(Base):
+    """用途：任务在某一风控阶段的一次检查快照，含结论级别与审核主体。"""
+
     __tablename__ = "risk_checks"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -104,6 +120,8 @@ class RiskCheckModel(Base):
 
 
 class RiskFindingModel(Base):
+    """用途：单次风控检查下的具体命中项（敏感词、版权等）及修改建议。"""
+
     __tablename__ = "risk_findings"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -118,6 +136,8 @@ class RiskFindingModel(Base):
 
 
 class AuthorizationRecordModel(Base):
+    """用途：用户对上传/使用素材的授权确认留痕，按任务与资产类型唯一。"""
+
     __tablename__ = "authorization_records"
     __table_args__ = (UniqueConstraint("task_id", "asset_type", name="uq_authorization_task_asset"),)
 
@@ -133,6 +153,8 @@ class AuthorizationRecordModel(Base):
 
 
 class DistributionRecordModel(Base, TimestampMixin):
+    """用途：成片向外部平台分发/upload 的任务记录与结果 URL。"""
+
     __tablename__ = "distribution_records"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)

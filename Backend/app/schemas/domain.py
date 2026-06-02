@@ -1,3 +1,7 @@
+"""
+用途：API 层 Pydantic 模型（请求/响应 DTO），在路由与领域/ORM 之间做校验与序列化边界。
+"""
+
 from datetime import datetime
 from typing import Any, Literal
 
@@ -10,6 +14,8 @@ RiskStage = Literal["input", "script", "audio", "avatar", "compose", "pre_publis
 
 
 class SubtitleStyle(BaseModel):
+    """用途：成片字幕样式配置，随生成参数保存并在合成阶段应用。"""
+
     enabled: bool
     font_size: int
     position: Literal["bottom", "middle", "top"] = "bottom"
@@ -18,6 +24,8 @@ class SubtitleStyle(BaseModel):
 
 
 class TaskOut(BaseModel):
+    """用途：任务详情 API 响应体，聚合状态、生成配置与错误信息。"""
+
     id: str
     script_source: str
     script_generation_mode: str | None = None
@@ -39,6 +47,8 @@ class TaskOut(BaseModel):
 
 
 class ScriptSegmentOut(BaseModel):
+    """用途：单条脚本片段的对外表示，含 ASR 原文与用户编辑稿。"""
+
     id: str
     task_id: str
     index: int
@@ -51,6 +61,8 @@ class ScriptSegmentOut(BaseModel):
 
 
 class SegmentUpdate(BaseModel):
+    """用途：批量更新片段请求中的单条项，edited_text 为必填提交内容。"""
+
     id: str | None = None
     index: int
     start_time: float | None = None
@@ -60,17 +72,23 @@ class SegmentUpdate(BaseModel):
 
 
 class UpdateSegmentsRequest(BaseModel):
+    """用途：用户确认/编辑脚本后提交的整体请求，含生成模式与片段列表。"""
+
     script_generation_mode: ScriptGenerationMode = "full_script"
     segments: list[SegmentUpdate]
 
 
 class CreateScriptTaskRequest(BaseModel):
+    """用途：从粘贴文案创建任务的入参，跳过视频 ASR 路径。"""
+
     content: str = Field(min_length=1, max_length=5000)
     content_type: Literal["pasted_subtitle", "pasted_script"] = "pasted_script"
     aspect_ratio: AspectRatio = "9:16"
 
 
 class SaveGenerationConfigRequest(BaseModel):
+    """用途：文案确认后保存 TTS/数字人/字幕/背景音乐等生成配置。"""
+
     voice_profile_id: str
     avatar_profile_id: str
     generation_voice_mode: Literal["uploaded_voice", "preset_voice"]
@@ -85,6 +103,8 @@ class SaveGenerationConfigRequest(BaseModel):
 
 
 class RiskFindingOut(BaseModel):
+    """用途：风控命中明细的 API 输出。"""
+
     id: str
     type: str
     target: str
@@ -94,6 +114,8 @@ class RiskFindingOut(BaseModel):
 
 
 class RiskCheckOut(BaseModel):
+    """用途：某阶段一次完整风控检查的结果，含 findings 列表。"""
+
     id: str
     task_id: str
     stage: str
@@ -107,11 +129,15 @@ class RiskCheckOut(BaseModel):
 
 
 class ConfirmRiskRequest(BaseModel):
+    """用途：用户在人工复核节点确认继续或附注的请求体。"""
+
     confirmed: bool = True
     confirmation_note: str
 
 
 class ArtifactOut(BaseModel):
+    """用途：任务关联产物（文件）的元信息与存储路径。"""
+
     id: str
     task_id: str
     type: str
@@ -121,6 +147,8 @@ class ArtifactOut(BaseModel):
 
 
 class VoiceProfileOut(BaseModel):
+    """用途：可选音色预设的对外结构。"""
+
     id: str
     name: str
     provider: Literal["cozyvoice"]
@@ -129,6 +157,8 @@ class VoiceProfileOut(BaseModel):
 
 
 class AvatarProfileOut(BaseModel):
+    """用途：可选数字人形象的对外结构。"""
+
     id: str
     name: str
     provider: Literal["heygem"]
@@ -136,6 +166,8 @@ class AvatarProfileOut(BaseModel):
 
 
 class PrePublishCheckInput(BaseModel):
+    """用途：发布前合规检查所需的标题、标签与平台信息。"""
+
     platform: Literal["douyin", "xiaohongshu", "bilibili", "wechat_channels", "kuaishou", "tiktok", "youtube"]
     title: str
     description: str
@@ -145,6 +177,8 @@ class PrePublishCheckInput(BaseModel):
 
 
 class MusicTrackOut(BaseModel):
+    """用途：背景音乐库中单曲的展示与路径信息。"""
+
     id: str
     name: str
     path: str
@@ -153,6 +187,8 @@ class MusicTrackOut(BaseModel):
 
 
 class CreateDistributionRequest(BaseModel):
+    """用途：创建向指定平台分发成片的请求参数。"""
+
     platform: Literal["douyin", "xiaohongshu", "bilibili", "wechat_channels", "kuaishou", "tiktok", "youtube"]
     title: str = Field(min_length=1, max_length=100)
     description: str = ""
@@ -160,6 +196,8 @@ class CreateDistributionRequest(BaseModel):
 
 
 class DistributionRecordOut(BaseModel):
+    """用途：分发任务的状态与平台链接查询响应。"""
+
     id: str
     task_id: str
     platform: str

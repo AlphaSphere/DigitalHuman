@@ -1,3 +1,6 @@
+/**
+ * 用途：生成进度页，轮询任务状态、展示时间轴，失败时可重试，完成后自动跳转结果页。
+ */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
@@ -6,6 +9,7 @@ import { StepNav } from '../components/StepNav'
 import { getProgress, getStatusMessage, mockApi } from '../lib/api-client/mockApi'
 import type { TaskStatus } from '../types/domain'
 
+/** 进度时间轴展示用的关键状态序列（与 UI 步骤一一对应）。 */
 const timeline: TaskStatus[] = [
   'uploaded',
   'transcribed',
@@ -21,6 +25,16 @@ const timeline: TaskStatus[] = [
   'completed',
 ]
 
+/**
+ * 视频生成进度监控页面。
+ *
+ * @returns 进度环、时间轴与失败重试 UI
+ *
+ * 逻辑：
+ * - refetchInterval 1.8s 轮询直至 completed；
+ * - failed 态展示错误码与 retryTask；
+ * - completed 后 800ms 自动 navigate 至结果页。
+ */
 export function ProgressPage() {
   const { taskId = '' } = useParams()
   const navigate = useNavigate()

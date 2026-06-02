@@ -1,13 +1,35 @@
+"""背景音乐库扫描服务。
+
+在保存生成配置时，用户可从本地 CC0 音乐库选择 background_music_path；
+本模块负责枚举曲目并解析时长供前端展示。
+"""
+
 import subprocess
 from pathlib import Path
 
 from app.core.config import get_settings
 
 
+# 音乐库扫描支持的音频扩展名
 SUPPORTED_MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 
 
 def list_music_tracks() -> list[dict]:
+    """扫描配置的音乐库目录并返回曲目列表。
+
+    用途：
+        生成配置界面展示可选背景音乐（id、名称、路径、时长）。
+
+    参数：
+        无（路径与 ffprobe 命令从应用配置读取）。
+
+    返回：
+        曲目 dict 列表；库目录不存在时返回空列表。
+
+    逻辑：
+        递归遍历 music_library_path 下支持扩展名的文件；
+        对每条记录调用 ffprobe 解析时长，失败时 duration 为 None。
+    """
     settings = get_settings()
     root = settings.music_library_path
     tracks = []
@@ -28,10 +50,12 @@ def list_music_tracks() -> list[dict]:
 
 
 def _display_name(path: Path) -> str:
+    """将文件名 stem 格式化为展示用曲目名。"""
     return path.stem.replace("_", " ").replace("-", " ").strip().title()
 
 
 def _duration_seconds(ffprobe_command: str, path: Path) -> float | None:
+    """通过 ffprobe 读取音频时长（秒），失败返回 None。"""
     try:
         result = subprocess.run(
             [

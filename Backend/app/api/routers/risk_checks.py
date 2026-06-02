@@ -1,3 +1,9 @@
+"""内容风险审核 HTTP 路由。
+
+覆盖脚本确认后（script）与分发前（pre_publish）两阶段：
+列表查询、人工确认放行、发布前元信息校验。
+"""
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -18,11 +24,44 @@ router = APIRouter()
 
 @router.get("/tasks/{task_id}/risk-checks")
 def list_checks(task_id: str, stage: RiskStage | None = Query(default=None), db: Session = Depends(get_db)) -> dict:
+    """列出任务的风险审核记录。
+
+    用途：
+        展示历史审核结果与 findings，可按 stage 过滤。
+
+    参数：
+        task_id: 任务 ID。
+        stage: 可选查询参数 script / pre_publish。
+        db: 数据库会话。
+
+    返回：
+        riskCheck dict 数组。
+
+    逻辑：
+        get_risk_checks 预加载 findings 后 risk_check_to_dict。
+    """
     return success_response([risk_check_to_dict(item) for item in get_risk_checks(db, task_id, stage)])
 
 
 @router.post("/tasks/{task_id}/risk-checks/{risk_check_id}/confirm")
 def confirm(task_id: str, risk_check_id: str, payload: ConfirmRiskRequest, db: Session = Depends(get_db)) -> dict:
+    """人工确认通过某条风险审核。
+
+    用途：
+        待人工复核时，填写说明后放行并推进任务至 script_confirmed 或 publish_ready。
+
+    参数：
+        task_id: 任务 ID。
+        risk_check_id: 风险记录 ID。
+        payload: 含 confirmation_note 的请求体。
+        db: 数据库会话。
+
+    返回：
+        含 task.id 与 riskCheck 对象的 success_response。
+
+    逻辑：
+        confirm_risk_check；ValueError 转为 VALIDATION_ERROR ApiError。
+    """
     try:
         task, risk_check = confirm_risk_check(db, task_id, risk_check_id, payload.confirmation_note)
     except ValueError as exc:
@@ -32,6 +71,22 @@ def confirm(task_id: str, risk_check_id: str, payload: ConfirmRiskRequest, db: S
 
 @router.post("/tasks/{task_id}/pre-publish-check")
 def pre_publish_check(task_id: str, payload: PrePublishCheckInput, db: Session = Depends(get_db)) -> dict:
+    """执行发布前风险检查（标题/简介/AI 标识）。
+
+    用途：
+        分发前最后一道内容合规校验，不直接创建分发记录。
+
+    参数：
+        task_id: 任务 ID。
+        payload: PrePublishCheckInput（标题、简介、ai_label_confirmed 等）。
+        db: 数据库会话。
+
+    返回：
+        本轮 pre_publish 阶段的 riskCheck dict。
+
+    逻辑：
+        build_pre_publish_findings → replace_risk_check → commit。
+    """
     risk_check = replace_risk_check(db, task_id, RiskStage.pre_publish, build_pre_publish_findings(payload))
     db.commit()
     db.refresh(risk_check)

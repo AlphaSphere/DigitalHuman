@@ -1,3 +1,6 @@
+/**
+ * 用途：任务创建页，支持上传参考视频/填写链接或粘贴文案创建新任务。
+ */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -9,6 +12,7 @@ import { StepNav } from '../components/StepNav'
 import { mockApi } from '../lib/api-client/mockApi'
 import type { AspectRatio } from '../types/domain'
 
+/** 创建任务表单的 Zod 校验 schema。 */
 const taskSchema = z.object({
   sourceMode: z.enum(['video', 'script']),
   videoInputMode: z.enum(['upload', 'url']),
@@ -19,12 +23,19 @@ const taskSchema = z.object({
 
 type TaskFormValues = z.infer<typeof taskSchema>
 
+/** 输出画幅比例选项列表。 */
 const aspectRatioOptions: Array<{ value: AspectRatio; label: string; description: string }> = [
   { value: '9:16', label: '9:16', description: '竖屏' },
   { value: '16:9', label: '16:9', description: '横屏' },
   { value: '1:1', label: '1:1', description: '方屏' },
 ]
 
+/**
+ * 校验字符串是否为 http/https URL。
+ *
+ * @param value - 待检测字符串
+ * @returns 合法 HTTP(S) URL 时为 true
+ */
 const isValidHttpUrl = (value: string) => {
   try {
     const url = new URL(value)
@@ -34,6 +45,16 @@ const isValidHttpUrl = (value: string) => {
   }
 }
 
+/**
+ * 新任务创建页面组件。
+ *
+ * @returns 含输入方式、画幅选择与提交表单的完整页面
+ *
+ * 逻辑：
+ * - sourceMode=video 时按 upload/url 分支调用 createVideoTask；
+ * - sourceMode=script 时调用 createScriptTask；
+ * - 成功后 navigate 至文案确认页。
+ */
 export function NewTaskPage() {
   const navigate = useNavigate()
   const [file, setFile] = useState<File | null>(null)

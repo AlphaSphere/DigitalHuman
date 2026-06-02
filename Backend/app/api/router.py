@@ -1,3 +1,7 @@
+"""
+用途：顶层 API 路由注册表，将各业务子路由挂载到统一 APIRouter，由 main 以 `/api` 前缀 include。
+"""
+
 from fastapi import APIRouter
 
 from app.api.routers import artifacts, distributions, music, profiles, risk_checks, segments, tasks

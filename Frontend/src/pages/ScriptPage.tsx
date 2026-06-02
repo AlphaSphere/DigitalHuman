@@ -1,3 +1,6 @@
+/**
+ * 用途：文案确认页，支持整段或分段时间轴两种编辑模式，保存并确认后进入风险检查。
+ */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
@@ -7,12 +10,33 @@ import { StepNav } from '../components/StepNav'
 import { getStatusMessage, mockApi } from '../lib/api-client/mockApi'
 import type { ScriptGenerationMode, ScriptSegment } from '../types/domain'
 
+/** 完整文案模式下的最大字符数限制。 */
 const FULL_SCRIPT_MAX_LENGTH = 5000
 
+/**
+ * 取段落当前生效文本（编辑态优先于原文）。
+ *
+ * @param segment - ScriptSegment
+ * @returns edited_text 或 original_text
+ */
 const getSegmentText = (segment: ScriptSegment) => segment.edited_text ?? segment.original_text
 
+/**
+ * 将多段文案合并为整段字符串（段间换行）。
+ *
+ * @param segments - 段落列表
+ * @returns 合并后的完整文案
+ */
 const buildFullScript = (segments: ScriptSegment[]) => segments.map(getSegmentText).join('\n')
 
+/**
+ * 将整段文案包装为单条 ScriptSegment 供 API 提交。
+ *
+ * @param taskId - 任务 ID
+ * @param text - 完整文案内容
+ * @param segments - 原段落列表（用于复用 id 与时间范围）
+ * @returns 长度为 1 的 ScriptSegment 数组
+ */
 const buildFullScriptSegment = (taskId: string, text: string, segments: ScriptSegment[]): ScriptSegment[] => [
   {
     id: segments[0]?.id ?? `seg_full_${taskId}`,
@@ -27,6 +51,16 @@ const buildFullScriptSegment = (taskId: string, text: string, segments: ScriptSe
   },
 ]
 
+/**
+ * 文案确认与编辑页面。
+ *
+ * @returns 含模式切换、编辑器与保存/确认操作的页面
+ *
+ * 逻辑：
+ * - draftSegments 覆盖服务端数据实现本地草稿；
+ * - full_script 模式提交单段，timed_segments 保留多段；
+ * - confirmMutation 先 save 再 confirmScript，成功后跳转风险页。
+ */
 export function ScriptPage() {
   const { taskId = '' } = useParams()
   const navigate = useNavigate()

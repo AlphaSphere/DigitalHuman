@@ -1,3 +1,6 @@
+/**
+ * 用途：文案阶段内容风险审核页，展示命中项并支持人工确认后继续。
+ */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
@@ -7,6 +10,16 @@ import { StatusBadge } from '../components/StatusBadge'
 import { StepNav } from '../components/StepNav'
 import { getStatusMessage, mockApi } from '../lib/api-client/mockApi'
 
+/**
+ * 内容风险审核页面（script 阶段）。
+ *
+ * @returns 风险摘要、命中列表与继续/返回操作区
+ *
+ * 逻辑：
+ * - passed 可直接 Link 至配置页；
+ * - warning/manual_review 需填写说明并 confirmRiskCheck；
+ * - blocked 禁止继续，仅可返回修改文案。
+ */
 export function RiskReviewPage() {
   const { taskId = '' } = useParams()
   const navigate = useNavigate()

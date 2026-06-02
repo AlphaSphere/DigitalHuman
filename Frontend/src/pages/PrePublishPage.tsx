@@ -1,3 +1,6 @@
+/**
+ * 用途：发布前合规检查页，填写平台发布信息、执行风险检查并创建分发任务。
+ */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -7,6 +10,7 @@ import { StatusBadge } from '../components/StatusBadge'
 import { getStatusMessage, mockApi } from '../lib/api-client/mockApi'
 import type { PrePublishCheckInput, RiskCheck } from '../types/domain'
 
+/** 支持的发布平台选项。 */
 const platforms: Array<{ value: PrePublishCheckInput['platform']; label: string }> = [
   { value: 'douyin', label: '抖音' },
   { value: 'xiaohongshu', label: '小红书' },
@@ -17,6 +21,16 @@ const platforms: Array<{ value: PrePublishCheckInput['platform']; label: string 
   { value: 'youtube', label: 'YouTube' },
 ]
 
+/**
+ * 发布前合规检查与平台分发页面。
+ *
+ * @returns 发布信息表单、风险结果侧栏与分发记录列表
+ *
+ * 逻辑：
+ * - checkMutation 调用 runPrePublishCheck 并更新 activeRiskCheck；
+ * - passed 可直接 createDistribution；warning/manual_review 需 confirmRiskCheck；
+ * - blocked 禁止发布，需修改信息后重新检查。
+ */
 export function PrePublishPage() {
   const { taskId = '' } = useParams()
   const queryClient = useQueryClient()
