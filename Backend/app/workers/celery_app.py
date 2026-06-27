@@ -25,4 +25,13 @@ celery_app = Celery(
     backend=settings.redis_url,
     include=["app.workers.tasks"],
 )
-celery_app.conf.update(task_track_started=True, task_serializer="json", result_serializer="json", accept_content=["json"])
+celery_conf = {
+    "task_track_started": True,
+    "task_serializer": "json",
+    "result_serializer": "json",
+    "accept_content": ["json"],
+}
+# 本地桌面模式：任务在 API 进程内同步执行，省去 Redis 与 Celery Worker
+if settings.local_desktop_mode:
+    celery_conf.update(task_always_eager=True, task_eager_propagates=True)
+celery_app.conf.update(**celery_conf)

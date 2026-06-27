@@ -2,6 +2,8 @@
 用途：应用启动时的数据种子逻辑，写入默认音色与数字人预设，保证 profiles 接口开箱可用。
 """
 
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.db.models import AvatarProfileModel, VoiceProfileModel
@@ -13,14 +15,14 @@ DEFAULT_VOICES = [
         name="默认中文女声",
         provider="cozyvoice",
         sample_path="storage/voices/default_female.wav",
-        config={"speed": 1, "volume": 1, "description": "清晰、稳定，适合知识口播。"},
+        config={"speed": 1, "volume": 1, "description": "清晰、稳定，适合知识口播。", "spk_id": "中文女"},
     ),
     VoiceProfileModel(
         id="voice_default_male",
         name="默认中文男声",
         provider="cozyvoice",
         sample_path="storage/voices/default_male.wav",
-        config={"speed": 0.96, "volume": 1, "description": "低沉、有信任感，适合讲解类内容。"},
+        config={"speed": 0.96, "volume": 1, "description": "低沉、有信任感，适合讲解类内容。", "spk_id": "中文男"},
     ),
 ]
 
@@ -66,3 +68,20 @@ def seed_profiles(db: Session) -> None:
         if not db.get(AvatarProfileModel, avatar.id):
             db.add(avatar)
     db.commit()
+
+
+def ensure_runtime_schema(engine: Engine) -> None:
+    """补齐本地已有数据库的新字段，避免 create_all 无法更新旧表结构。"""
+    columns = {column["name"] for column in inspect(engine).get_columns("tasks")}
+    statements: list[str] = []
+    if "custom_voice_prompt_text" not in columns:
+        statements.append("ALTER TABLE tasks ADD COLUMN custom_voice_prompt_text TEXT")
+    if "generation_quality" not in columns:
+        statements.append("ALTER TABLE tasks ADD COLUMN generation_quality VARCHAR(32) DEFAULT 'full'")
+    if "tuilionnx_sync_offset" not in columns:
+        statements.append("ALTER TABLE tasks ADD COLUMN tuilionnx_sync_offset INTEGER DEFAULT 0")
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))

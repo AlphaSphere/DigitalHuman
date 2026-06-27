@@ -48,6 +48,8 @@ export type ArtifactType =
   | 'avatar_video'
   | 'subtitle'
   | 'final_video'
+  | 'final_video_no_subtitle'
+  | 'cover'
 
 /** 输出视频宽高比。 */
 export type AspectRatio = '9:16' | '16:9' | '1:1'
@@ -56,7 +58,12 @@ export type AspectRatio = '9:16' | '16:9' | '1:1'
 export type GenerationVoiceMode = 'uploaded_voice' | 'preset_voice'
 
 /** 成片素材模式：上传自拍视频或预设数字人。 */
-export type GenerationVideoMode = 'uploaded_video' | 'preset_avatar'
+export type GenerationVideoMode = 'uploaded_video' | 'preset_avatar' | 'tuilionnx_avatar'
+export type BackgroundMusicMode = 'none' | 'fixed' | 'random'
+export type AvatarEngine = 'heygem' | 'tuilionnx'
+export type GenerationQuality = 'fast' | 'full'
+export type ScriptRewriteMode = 'auto' | 'instruction'
+export type ScriptRewriteStyle = 'viral_spoken' | 'formal' | 'humorous' | 'custom'
 
 /**
  * 字幕样式配置。
@@ -67,6 +74,7 @@ export interface SubtitleStyle {
   position: 'bottom' | 'middle' | 'top'
   color: string
   stroke: boolean
+  font_family: string
 }
 
 /**
@@ -78,17 +86,33 @@ export interface Task {
   script_generation_mode?: ScriptGenerationMode | null
   status: TaskStatus
   source_video_path?: string | null
+  source_url?: string | null
   duration?: number | null
   aspect_ratio?: AspectRatio
+  pipeline_mode?: 'stepwise' | 'one_click' | null
+  pipeline_stage?: {
+    stage?: string
+    message?: string
+    percent?: number
+    stage_timings?: Record<string, { duration_ms?: number; finished_at?: string }>
+  } | null
   generation_voice_mode?: GenerationVoiceMode | null
   custom_voice_path?: string | null
+  custom_voice_prompt_text?: string | null
   generation_video_mode?: GenerationVideoMode | null
   custom_video_path?: string | null
   voice_profile_id?: string | null
   avatar_profile_id?: string | null
   subtitle_style?: SubtitleStyle | null
+  voice_speed?: number | null
   background_music_path?: string | null
+  background_music_mode?: BackgroundMusicMode | null
   background_music_volume?: number | null
+  ai_watermark_enabled?: boolean | null
+  export_without_subtitle?: boolean | null
+  avatar_engine?: AvatarEngine | null
+  generation_quality?: GenerationQuality | null
+  tuilionnx_sync_offset?: number | null
   error_code?: string | null
   error_message?: string | null
   created_at: string
@@ -200,7 +224,7 @@ export interface RiskCheck {
   risk_level: RiskLevel
   risk_types: RiskType[]
   findings: RiskFinding[]
-  reviewed_by: 'system' | 'user' | 'admin'
+  reviewed_by: 'system' | 'user' | 'admin' | 'deepseek'
   reviewed_at?: string | null
   created_at: string
 }
@@ -251,9 +275,62 @@ export interface DistributionRecord {
   title: string
   description?: string | null
   tags: string[]
+  cover_artifact_id?: string | null
   status: 'pending' | 'running' | 'success' | 'failed'
   external_url?: string | null
   error_message?: string | null
   created_at: string
   updated_at: string
+}
+
+export interface ScriptRewriteInput {
+  mode: ScriptRewriteMode
+  style?: ScriptRewriteStyle
+  instruction?: string
+}
+
+export interface ScriptRewriteResult {
+  segments: ScriptSegment[]
+  risk_check_id?: string
+  rewrite_summary?: string
+}
+
+export interface AiPublishMetadataResult {
+  title: string
+  description: string
+  tags: string[]
+}
+
+export interface BatchDistributionInput {
+  platforms: PrePublishCheckInput['platform'][]
+  title: string
+  description: string
+  tags: string[]
+  cover_artifact_id?: string
+}
+
+export interface OneClickPipelineInput {
+  source_url?: string
+  aspect_ratio: AspectRatio
+  rewrite_enabled: boolean
+  rewrite_mode?: ScriptRewriteMode
+  publish_platforms: PrePublishCheckInput['platform'][]
+  auto_generate_metadata: boolean
+  auto_generate_cover: boolean
+  generation_quality?: GenerationQuality
+  generation_voice_mode?: GenerationVoiceMode
+  require_config_before_generate?: boolean
+  voice_speed?: number
+  background_music_mode?: BackgroundMusicMode
+  ai_watermark_enabled?: boolean
+  avatar_engine?: AvatarEngine
+}
+
+export interface PipelineStatus {
+  task_id: string
+  stage: string
+  message: string
+  percent: number
+  status: TaskStatus
+  stage_timings?: Record<string, { duration_ms?: number; finished_at?: string }>
 }

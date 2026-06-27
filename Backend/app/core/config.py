@@ -17,25 +17,28 @@ class Settings(BaseSettings):
     app_name: str = "Digital Human API"
     api_prefix: str = "/api"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    # 本地桌面模式：SQLite + Celery 同步执行，无需 Docker / Redis / 独立 Worker
+    local_desktop_mode: bool = False
 
     database_url: str = "mysql+pymysql://digital_human:digital_human@mysql:3306/digital_human"
     redis_url: str = "redis://redis:6379/0"
-    storage_root: Path = Path("/app/storage")
+    storage_root: Path = Path("./storage")
 
-    whisper_base_url: str = "http://whisper:8001"
+    whisper_base_url: str | None = None
     whisper_command: str = "whisper"
     whisper_model: str = "base"
     whisper_language: str | None = "zh"
     whisper_device: str | None = None
     cozyvoice_base_url: str = "http://cozyvoice:8002"
     heygem_base_url: str = "http://heygem:8003"
+    # 单段配音通常数秒；长视频会拆成多段请求，留足余量即可
     model_http_timeout_seconds: float = 600
     use_stub_model_adapters: bool = True
 
     ffmpeg_command: str = "ffmpeg"
     ffprobe_command: str = "ffprobe"
 
-    music_library_path: Path = Path("/app/storage/music")
+    music_library_path: Path = Path("./storage/music")
     enable_background_music: bool = True
 
     social_auto_upload_command: str = "sau"
@@ -43,10 +46,45 @@ class Settings(BaseSettings):
     social_auto_upload_workdir: Path | None = None
     social_auto_upload_timeout_seconds: float = 900
     enable_distribution: bool = False
+    bilibili_default_tid: int = 249
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    url_download_command: str = "yt-dlp"
+    url_download_timeout_seconds: float = 600
+    url_max_size_mb: int = 500
+    enable_url_import: bool = True
 
-    @field_validator("whisper_language", "whisper_device", "social_auto_upload_workdir", mode="before")
+    ffmpeg_font_path: Path | None = None
+
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"
+    deepseek_timeout_seconds: float = 120
+    enable_llm_rewrite: bool = True
+
+    enable_cover_generation: bool = True
+    cover_default_template: str = "title_on_frame"
+
+    playwright_chrome_cdp_url: str = "http://host.docker.internal:9222"
+    playwright_publish_timeout_seconds: float = 900
+
+    tuilionnx_base_url: str = "http://tuilionnx:8004"
+
+    _project_root = Path(__file__).resolve().parents[3]
+
+    model_config = SettingsConfigDict(
+        env_file=str(_project_root / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    @field_validator(
+        "whisper_language",
+        "whisper_device",
+        "whisper_base_url",
+        "social_auto_upload_workdir",
+        "ffmpeg_font_path",
+        mode="before",
+    )
     @classmethod
     def empty_string_to_none(cls, value):
         """

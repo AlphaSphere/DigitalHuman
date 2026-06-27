@@ -9,13 +9,14 @@ import shlex
 import shutil
 import subprocess
 import time
+import wave
 from collections.abc import Mapping
 from pathlib import Path
 from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,7 +36,16 @@ class Settings(BaseSettings):
     heygem_poll_timeout_seconds: float = 1800
     heygem_workdir: Path | None = None
     heygem_timeout_seconds: float = 1800
-    allow_stub_output: bool = False
+    # 路径翻译：Windows 宿主路径 → Duix 容器内挂载路径
+    # 例如：HEYGEM_HOST_STORAGE_ROOT=C:\...\storage
+    #       HEYGEM_CONTAINER_STORAGE_ROOT=/data/storage
+    # Duix 容器启动时需挂载：-v <host_root>:<container_root>
+    heygem_host_storage_root: str | None = None
+    heygem_container_storage_root: str | None = None
+    allow_stub_output: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("ALLOW_STUB_OUTPUT", "ALLOW_MODEL_SERVICE_STUB_OUTPUT"),
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -47,6 +57,8 @@ class Settings(BaseSettings):
         "heygem_avatar_profile_map",
         "heygem_result_dir",
         "heygem_workdir",
+        "heygem_host_storage_root",
+        "heygem_container_storage_root",
         mode="before",
     )
     @classmethod
@@ -108,7 +120,7 @@ def health() -> dict:
     if not settings.heygem_video_base_url and not settings.heygem_upstream_url:
         mode = "command"
     if not settings.heygem_video_base_url and not settings.heygem_upstream_url and not settings.heygem_command_template:
-        mode = "unconfigured"
+        mode = "stub" if settings.allow_stub_output else "unconfigured"
     return {"status": "ok", "service": "heygem", "mode": mode}
 
 
@@ -143,10 +155,55 @@ def generate(payload: GenerateRequest) -> GenerateResponse:
     if settings.heygem_command_template:
         return _generate_command(payload, output_path)
     if settings.allow_stub_output:
-        # 仅供本地联调协议使用；真实生成时必须关闭并配置 HeyGem 仓库命令或上游服务。
-        output_path.write_bytes(b"stub heygem video")
+        _write_stub_video(output_path, audio_path)
         return GenerateResponse(video_path=str(output_path))
     raise HTTPException(status_code=503, detail="HeyGem 服务未配置：请设置 HEYGEM_COMMAND_TEMPLATE 或 HEYGEM_UPSTREAM_URL")
+
+
+def _probe_audio_duration(audio_path: Path) -> float:
+    """读取 WAV 时长，供 stub 视频生成时使用。"""
+    try:
+        with wave.open(str(audio_path), "rb") as wav_file:
+            rate = wav_file.getframerate()
+            frames = wav_file.getnframes()
+            if rate <= 0:
+                return 3.0
+            return max(1.0, min(120.0, frames / rate))
+    except wave.Error:
+        return 3.0
+
+
+def _write_stub_video(output_path: Path, audio_path: Path) -> None:
+    """用 FFmpeg 生成黑底占位视频并混入配音，便于本地无 HeyGem 时继续合成。"""
+    ffmpeg = shutil.which("ffmpeg")
+    duration = _probe_audio_duration(audio_path)
+    if ffmpeg:
+        command = [
+            ffmpeg,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=black:s=1080x1920:d={duration:.2f}",
+            "-i",
+            str(audio_path),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(output_path),
+        ]
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            if output_path.exists() and output_path.stat().st_size > 0:
+                return
+        except subprocess.CalledProcessError as exc:
+            message = exc.stderr or exc.stdout or str(exc)
+            raise HTTPException(status_code=503, detail=f"HeyGem 占位视频生成失败（需 ffmpeg）: {message}") from exc
+    raise HTTPException(status_code=503, detail="HeyGem 未配置且本机未安装 ffmpeg，无法生成占位视频")
 
 
 def _generate_upstream(payload: GenerateRequest) -> GenerateResponse:
@@ -165,7 +222,7 @@ def _generate_upstream(payload: GenerateRequest) -> GenerateResponse:
     """
     assert settings.heygem_upstream_url
     try:
-        with httpx.Client(timeout=settings.heygem_timeout_seconds) as client:
+        with httpx.Client(timeout=settings.heygem_timeout_seconds, trust_env=False) as client:
             response = client.post(f"{settings.heygem_upstream_url.rstrip('/')}/generate", json=payload.model_dump())
             response.raise_for_status()
             data = response.json()
@@ -175,6 +232,34 @@ def _generate_upstream(payload: GenerateRequest) -> GenerateResponse:
     if not video_path:
         raise HTTPException(status_code=502, detail="HeyGem 上游未返回 video_path")
     return GenerateResponse(video_path=video_path)
+
+
+def _translate_path_for_container(host_path: str) -> str:
+    """将宿主机路径转换为 Duix 容器内的挂载路径。
+
+    用途：解决 Windows 宿主路径（C:\\...）无法被 Docker 容器读取的问题。
+
+    参数:
+        host_path: 宿主机上的绝对路径字符串。
+
+    返回:
+        若配置了路径映射，返回容器内对应路径；否则原样返回。
+
+    逻辑:
+        比较 host_path 前缀与 HEYGEM_HOST_STORAGE_ROOT，匹配时替换为
+        HEYGEM_CONTAINER_STORAGE_ROOT，路径分隔符统一为正斜杠。
+    """
+    host_root = settings.heygem_host_storage_root
+    container_root = settings.heygem_container_storage_root
+    if not host_root or not container_root:
+        return host_path
+    # 统一为正斜杠再比较，兼容 Windows 反斜杠
+    normalized_path = host_path.replace("\\", "/")
+    normalized_root = host_root.replace("\\", "/").rstrip("/")
+    if normalized_path.startswith(normalized_root + "/") or normalized_path == normalized_root:
+        relative = normalized_path[len(normalized_root):]
+        return container_root.rstrip("/") + relative
+    return host_path
 
 
 def _generate_official_video(payload: GenerateRequest, output_path: Path) -> GenerateResponse:
@@ -202,17 +287,21 @@ def _generate_official_video(payload: GenerateRequest, output_path: Path) -> Gen
             detail="HeyGem 官方视频合成需要 avatar_profile_id 指向视频路径，或配置 HEYGEM_DEFAULT_VIDEO_PATH",
         )
 
+    # 将宿主机路径翻译为容器内可读路径（若配置了路径映射）
+    container_audio = _translate_path_for_container(payload.audio_path)
+    container_video = _translate_path_for_container(video_path)
+
     task_code = uuid4().hex
     submit_payload = {
-        "audio_url": payload.audio_path,
-        "video_url": video_path,
+        "audio_url": container_audio,
+        "video_url": container_video,
         "code": task_code,
         "chaofen": 0,
         "watermark_switch": 0,
         "pn": 1,
     }
     try:
-        with httpx.Client(timeout=settings.heygem_timeout_seconds) as client:
+        with httpx.Client(timeout=settings.heygem_timeout_seconds, trust_env=False) as client:
             submit_response = client.post(
                 f"{settings.heygem_video_base_url.rstrip('/')}/easy/submit",
                 json=submit_payload,

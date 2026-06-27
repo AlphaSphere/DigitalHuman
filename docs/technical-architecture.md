@@ -278,6 +278,8 @@ class FFmpegAdapter:
 
 `base_video_path` 可以是 HeyGem 生成的数字人视频，也可以是用户在配置页上传的自拍视频。
 
+Windows 合成注意事项：`subtitles` 滤镜路径必须使用引号包裹的 POSIX 形式（如 `subtitles='C\:/Users/.../subtitle.srt'`）。若仅用反斜杠转义，libass 会把路径解析成无效参数并返回 `Invalid argument`（exit -22）。烧录字幕时需同时指定 `original_size`（与成片分辨率一致，如 `1080x1920`）和 `MarginV`，否则 `font_size` 会被错误放大且无法贴底。
+
 ### 5.2 Whisper 适配器
 
 职责：
@@ -440,6 +442,16 @@ stateDiagram-v2
   retrying --> composing
 ```
 
+**2026-06 守卫模块 [`Backend/app/services/task_guards.py`](Backend/app/services/task_guards.py)：**
+
+- `assert_not_in_generation`：生成阶段禁止改文案 / 重识别 / 跑合规。
+- `assert_can_retry_generation`：按 `error_code` 分流重试；拒绝重复 `retrying`。
+- `save_segments` 编辑已确认文案时回退为 `transcribed`。
+
+**异步投递统一入口 [`Backend/app/services/task_enqueue.py`](Backend/app/services/task_enqueue.py)：** 桌面 `BackgroundTasks` / 生产 Celery `.delay()`。
+
+**一键流水线 [`run_full_pipeline_task`](Backend/app/workers/tasks.py)：** 生成前自动 `check_script_risk` + `confirm_script`；需人工确认时停于 `content_review_required`。
+
 失败重试时不要从头开始，应该根据已存在的中间产物决定从哪个节点恢复。
 
 如果不希望主状态机过度复杂，MVP 也可以将审核结果保存为 `risk_status`、`risk_level`、`risk_reasons` 等附加字段。主状态只在需要阻断生成或发布时切换到 `content_review_required`、`content_rejected`、`publish_blocked`。
@@ -493,7 +505,7 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-  Browser[浏览器] --> Web[web 容器]
+  Desktop[桌面客户端 pywebview] --> Web[web 容器]
   Web --> API[api 容器]
   API --> Redis[(redis 容器)]
   API --> MySQL[(mysql 容器)]
@@ -511,7 +523,7 @@ MVP 阶段建议直接使用 Docker Compose 管理依赖服务，避免 Redis、
 
 | 服务 | 技术 | 端口 / 数据 | 职责 |
 | --- | --- | --- | --- |
-| `web` | React + Vite，代码位于 `Frontend/` | `5173` | 前端页面、任务创建、文案确认、进度展示、结果预览。 |
+| `web` | React + Vite，代码位于 `Frontend/` | `5173` | 前端页面；日常由桌面客户端 pywebview 加载，样式与 Web 版一致。 |
 | `api` | FastAPI + Uvicorn，代码位于 `Backend/` | `8000` | REST API、参数校验、数据库读写、任务投递。 |
 | `worker` | Celery Worker | 共享 `storage` volume | 执行 ASR、配音、数字人、字幕和合成任务。 |
 | `redis` | Redis | `6379` | 队列 broker 和任务状态缓存。 |
@@ -591,10 +603,10 @@ Whisper、CozyVoice、HeyGem 的接入方式可能不同，建议分阶段处理
 
 本地真实生成建议启动顺序：
 
-1. 先启动 `api`、`worker`、`mysql`、`redis`。
-2. 启动 CosyVoice 官方 runtime FastAPI，例如端口 `50000`，并把 `COSYVOICE_UPSTREAM_URL` 指向该地址。
-3. 启动 Duix.Avatar / HeyGem 官方视频合成服务，确认 `8383` 可访问，并把 `HEYGEM_VIDEO_BASE_URL` 指向该地址。
-4. 将 `USE_STUB_MODEL_ADAPTERS=false`，再启动 `whisper`、`cosyvoice`、`heygem` profile 服务进行端到端生成。
+1. 先启动 `api`、`worker`、`mysql`、`redis`（桌面模式为 SQLite + 同步 Celery）。
+2. Windows 一键安装 CosyVoice：`scripts/windows/安装CosyVoice.bat`，或 `python scripts/windows/setup_cosyvoice.py install && start`；将 `COSYVOICE_UPSTREAM_URL=http://127.0.0.1:50000`、`ALLOW_MODEL_SERVICE_STUB_OUTPUT=false` 写入 `.env`；8002 health 应显示 `upstream-http`。
+3. 数字人口型：安装 Docker Desktop 后部署 [Duix.Avatar](https://github.com/duixcom/Duix-Avatar)（`:8383`），设置 `HEYGEM_VIDEO_BASE_URL`；若暂无 Docker，可在配置页选择「上传自拍视频」模式，仅依赖 CosyVoice 真实配音 + FFmpeg 合成。
+4. 将 `USE_STUB_MODEL_ADAPTERS=false`，重启 `scripts/windows/重启模型服务.bat` 或一键启动脚本。
 
 ### 10.4 后续生产部署
 
@@ -852,3 +864,19 @@ Whisper、CozyVoice、HeyGem 这类模型生态更偏 Python，早期用 Python 
 - MVP 是否必须支持用户上传自定义数字人形象？
 - 是否需要账号系统和多用户隔离？
 - 成片生成速度的最低可接受标准是多少？
+
+## 17. KrLongAI 对齐模块（2026-06-18）
+
+新增适配器与服务：
+
+- `UrlDownloadAdapter`：yt-dlp 对标链接下载
+- `DeepSeekAdapter`：文案仿写、发布元信息、封面文案
+- `CoverAdapter`：FFmpeg 抽帧 + Pillow 封面
+- `PlaywrightPublisher`：抖音/小红书/视频号浏览器发布
+- `TuiliONNXAdapter`：第二数字人引擎（Ultralight-Digital-Human 本地 ONNX，`local-onnx` 模式）；快速模式传 `compress_inference` / `sync_offset` / `inference_scale`
+- `CozyVoiceAdapter`：克隆分段并行合成（快速模式 max_workers=3，40 字/段）
+- `pipeline_service` + `tasks.run_full_pipeline`：一键追爆款编排；支持上传音色、生成前暂停于 `await_config`
+
+前端任务创建页 `/tasks/new` 为唯一入口（分步创作）；任务列表 `/tasks`。配置页支持语速、随机 BGM、字幕样式烧录、AI 水印。
+
+**桌面交付形态**：`scripts/windows/一键启动数字人追爆.bat` → `combined_launcher.py`，本地 SQLite + uvicorn/Vite + pywebview 窗口。当 `USE_STUB_MODEL_ADAPTERS=false` 时，启动器会额外拉起 CosyVoice(8002) 与 HeyGem(8003) 包装服务；若 `.env` 未配置上游地址，则自动启用占位输出（静音 WAV / ffmpeg 黑底视频）以跑通合成链路。

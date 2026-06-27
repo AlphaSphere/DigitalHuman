@@ -1,9 +1,9 @@
 /**
- * 用途：展示单条内容风险命中详情卡片。
+ * 用途：展示单条内容风险命中详情卡片，支持点击跳转到正文位置。
  */
+import { canJumpToFinding, formatFindingPosition } from '../lib/scriptRiskHighlight'
 import type { RiskFinding } from '../types/domain'
 
-/** 风险类型到中文标签的映射。 */
 const riskTypeLabels: Record<RiskFinding['type'], string> = {
   copyright: '版权风险',
   portrait: '肖像风险',
@@ -14,24 +14,32 @@ const riskTypeLabels: Record<RiskFinding['type'], string> = {
 }
 
 interface RiskCardProps {
-  /** 单条风险发现记录 */
   finding: RiskFinding
+  active?: boolean
+  onJump?: (finding: RiskFinding) => void
 }
 
-/**
- * 渲染风险命中卡片：类型、目标、内容与处理建议。
- *
- * @param props.finding - RiskFinding 对象
- * @returns article.risk-card 元素
- *
- * 逻辑：缺失 text/position/suggestion 时使用友好占位文案。
- */
-export function RiskCard({ finding }: RiskCardProps) {
+export function RiskCard({ finding, active = false, onJump }: RiskCardProps) {
+  const jumpable = canJumpToFinding(finding)
+
   return (
-    <article className="risk-card">
+    <article
+      className={`risk-card${active ? ' active' : ''}${jumpable ? ' jumpable' : ''}`}
+      role={jumpable ? 'button' : undefined}
+      tabIndex={jumpable ? 0 : undefined}
+      onClick={() => jumpable && onJump?.(finding)}
+      onKeyDown={(event) => {
+        if (!jumpable) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onJump?.(finding)
+        }
+      }}
+    >
       <header>
         <span>{riskTypeLabels[finding.type]}</span>
-        <strong>{finding.target}</strong>
+        <strong>{finding.target === 'script' ? '正文' : finding.target}</strong>
+        {jumpable ? <em className="risk-jump-hint">点击定位</em> : null}
       </header>
       <dl>
         <div>
@@ -40,7 +48,7 @@ export function RiskCard({ finding }: RiskCardProps) {
         </div>
         <div>
           <dt>命中位置</dt>
-          <dd>{finding.position ?? '待系统定位'}</dd>
+          <dd>{formatFindingPosition(finding)}</dd>
         </div>
         <div>
           <dt>处理建议</dt>

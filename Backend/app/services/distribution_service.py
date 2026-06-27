@@ -66,6 +66,7 @@ def create_distribution(db: Session, task_id: str, payload: CreateDistributionRe
         title=payload.title,
         description=payload.description,
         tags=payload.tags,
+        cover_artifact_id=payload.cover_artifact_id,
         status="pending",
         raw_result={"final_video_path": final_video},
         created_at=datetime.utcnow(),
@@ -121,3 +122,36 @@ def get_final_video_path(db: Session, task_id: str) -> str:
     if not artifact or not artifact.path:
         raise ApiError("VALIDATION_ERROR", "请先生成最终视频后再分发")
     return artifact.path
+
+
+def create_batch_distributions(
+    db: Session,
+    task_id: str,
+    platforms: list[str],
+    title: str,
+    description: str,
+    tags: list[str],
+    cover_artifact_id: str | None = None,
+) -> list[str]:
+    """批量创建多平台分发记录。"""
+    final_video = get_final_video_path(db, task_id)
+    ids: list[str] = []
+    for platform in platforms:
+        record = DistributionRecordModel(
+            id=create_id("dist"),
+            task_id=task_id,
+            platform=platform,
+            title=title,
+            description=description,
+            tags=tags,
+            cover_artifact_id=cover_artifact_id,
+            status="pending",
+            raw_result={"final_video_path": final_video},
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(record)
+        db.flush()
+        ids.append(record.id)
+    db.commit()
+    return ids

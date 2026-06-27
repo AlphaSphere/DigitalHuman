@@ -69,6 +69,8 @@ class ArtifactType(StrEnum):
     avatar_video = "avatar_video"
     subtitle = "subtitle"
     final_video = "final_video"
+    final_video_no_subtitle = "final_video_no_subtitle"
+    cover = "cover"
 
 
 class AspectRatio(StrEnum):
@@ -91,6 +93,36 @@ class GenerationVideoMode(StrEnum):
 
     uploaded_video = "uploaded_video"
     preset_avatar = "preset_avatar"
+    tuilionnx_avatar = "tuilionnx_avatar"
+
+
+class BackgroundMusicMode(StrEnum):
+    """用途：背景音乐选择策略。"""
+
+    none = "none"
+    fixed = "fixed"
+    random = "random"
+
+
+class PipelineMode(StrEnum):
+    """用途：任务执行模式（分步向导或一键追爆款）。"""
+
+    stepwise = "stepwise"
+    one_click = "one_click"
+
+
+class AvatarEngine(StrEnum):
+    """用途：数字人生成引擎。"""
+
+    heygem = "heygem"
+    tuilionnx = "tuilionnx"
+
+
+class GenerationQuality(StrEnum):
+    """用途：成片生成质量档位（快速预览 vs 完整成片）。"""
+
+    fast = "fast"
+    full = "full"
 
 
 class RiskStatus(StrEnum):
@@ -133,11 +165,12 @@ class RiskType(StrEnum):
 
 
 class ReviewedBy(StrEnum):
-    """用途：风控记录的确认主体（系统自动、用户或管理员）。"""
+    """用途：风控记录的确认主体（系统自动、用户、管理员或 DeepSeek AI）。"""
 
     system = "system"
     user = "user"
     admin = "admin"
+    deepseek = "deepseek"
 
 
 class AuthorizationAssetType(StrEnum):

@@ -6,40 +6,31 @@ from pathlib import Path
 from app.core.config import get_settings
 from app.services.storage_service import touch_file, write_text
 
+# 成片字幕默认样式（与配置页 DEFAULT_SUBTITLE_STYLE 保持一致）
+_DEFAULT_SUBTITLE_STYLE: dict = {
+    "enabled": True,
+    "font_size": 20,
+    "position": "bottom",
+    "color": "#FFFFFF",
+    "stroke": True,
+    "font_family": "SimHei",
+}
+
+_OUTPUT_DIMENSIONS: dict[str, tuple[int, int]] = {
+    "9:16": (1080, 1920),
+    "16:9": (1920, 1080),
+    "1:1": (1080, 1080),
+}
+
 
 class FFmpegAdapter:
-    """FFmpeg 命令行适配器。
-
-    外部工具：系统安装的 ffmpeg/ffprobe，负责抽轨、字幕烧录、混音与编码。
-    Worker 镜像需预装 ffmpeg；Stub 模式下跳过实际转码。
-
-    接入方式：
-    - **CLI**：生产环境唯一路径，通过 subprocess 调用配置的 ffmpeg_command。
-    - **Stub**：`use_stub_model_adapters=true` 时对 extract_audio / compose_final 写占位文件。
-    - generate_subtitle 纯 Python 生成 SRT，不调用 ffmpeg。
-    """
+    """FFmpeg 命令行适配器。"""
 
     def __init__(self) -> None:
         self.settings = get_settings()
 
     def extract_audio(self, task_id: str, source_video_path: str) -> str:
-        """从源视频中提取单声道 16kHz PCM 音频。
-
-        用途：
-            转写流水线第一步，为 Whisper ASR 准备 wav（Whisper 对 16k 单声道兼容性好）。
-
-        参数：
-            task_id: 任务 ID。
-            source_video_path: 用户上传的源视频路径。
-
-        返回：
-            提取后的 wav 绝对路径（`intermediate/source_audio.wav`）。
-
-        逻辑：
-            1. 确保输出目录存在。
-            2. Stub：写入占位 wav 并返回。
-            3. ffmpeg -vn 去视频轨，pcm_s16le、16kHz、单声道输出。
-        """
+        """从源视频中提取单声道 16kHz PCM 音频。"""
         audio_path = self.settings.storage_root / "tasks" / task_id / "intermediate" / "source_audio.wav"
         audio_path.parent.mkdir(parents=True, exist_ok=True)
         if self.settings.use_stub_model_adapters:
@@ -64,19 +55,7 @@ class FFmpegAdapter:
         return str(audio_path)
 
     def generate_subtitle(self, task_id: str, script: str, segments: list | None = None) -> str:
-        """生成 SRT 字幕文件（不调用 FFmpeg）。
-
-        用途：
-            合成阶段将字幕烧录进成片；优先使用带时间戳的 ScriptSegment。
-
-        参数：
-            task_id: 任务 ID。
-            script: 完整脚本文本（segments 为空时按行均分时间）。
-            segments: 可选，ScriptSegmentModel 列表，含 start_time/end_time/edited_text。
-
-        返回：
-            写入的 `intermediate/subtitle.srt` 路径。
-        """
+        """生成 SRT 字幕文件（不调用 FFmpeg）。"""
         return write_text(task_id, "intermediate/subtitle.srt", self._to_srt(script, segments))
 
     def compose_final(
@@ -87,47 +66,63 @@ class FFmpegAdapter:
         subtitle_path: str,
         background_music_path: str | None = None,
         background_music_volume: float | None = None,
+        subtitle_style: dict | None = None,
+        aspect_ratio: str | None = None,
+        ai_watermark_enabled: bool = False,
+        export_without_subtitle: bool = False,
     ) -> str:
-        """合成带字幕（及可选背景音乐）的最终 mp4。
-
-        用途：
-            生成流水线最后一步：口播视频 + TTS 音轨 + 字幕 (+ BGM) → 成片。
-
-        参数：
-            task_id: 任务 ID。
-            base_video_path: HeyGem 或用户上传的基础视频。
-            audio_path: TTS 配音 wav。
-            subtitle_path: SRT 字幕路径。
-            background_music_path: 可选背景音乐文件。
-            background_music_volume: BGM 音量系数，默认 0.18。
-
-        返回：
-            `output/final_with_subtitle.mp4` 绝对路径。
-
-        逻辑：
-            1. Stub：写入占位 mp4。
-            2. 若启用 BGM 但文件不存在，抛出 ValueError。
-            3. 构建 ffmpeg 命令：两路输入（视频、配音）；可选第三路 BGM。
-            4. 有 BGM：filter_complex 做音量、淡入与 amix 混音。
-            5. 无 BGM：直接 map 视频轨与配音轨。
-            6. subtitles 滤镜烧录字幕，libx264 + aac，faststart，-shortest 截断至最短流。
-            7. subprocess 执行，失败由 Celery 捕获并标记任务失败。
-        """
+        """合成带字幕（及可选背景音乐）的最终 mp4。"""
         output_path = self.settings.storage_root / "tasks" / task_id / "output" / "final_with_subtitle.mp4"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if self.settings.use_stub_model_adapters:
-            return touch_file(task_id, "output/final_with_subtitle.mp4", b"stub final video")
+            touch_file(task_id, "output/final_with_subtitle.mp4", b"stub final video")
+            if export_without_subtitle:
+                touch_file(task_id, "output/final_no_subtitle.mp4", b"stub final video no subtitle")
+            return str(output_path)
         if self.settings.enable_background_music and background_music_path and not Path(background_music_path).exists():
             raise ValueError(f"背景音乐文件不存在: {background_music_path}")
-        # 真实环境要求 Worker 镜像安装 ffmpeg；失败会抛出异常并由 Celery 写入任务错误状态。
-        command = [
-            self.settings.ffmpeg_command,
-            "-y",
-            "-i",
+
+        no_subtitle_path = None
+        if export_without_subtitle:
+            no_subtitle_path = self.settings.storage_root / "tasks" / task_id / "output" / "final_no_subtitle.mp4"
+            self._run_compose(
+                base_video_path,
+                audio_path,
+                background_music_path,
+                background_music_volume,
+                None,
+                aspect_ratio,
+                ai_watermark_enabled,
+                str(no_subtitle_path),
+            )
+
+        self._run_compose(
             base_video_path,
-            "-i",
             audio_path,
-        ]
+            background_music_path,
+            background_music_volume,
+            subtitle_path,
+            aspect_ratio,
+            ai_watermark_enabled,
+            str(output_path),
+            subtitle_style,
+        )
+        return str(output_path)
+
+    def _run_compose(
+        self,
+        base_video_path: str,
+        audio_path: str,
+        background_music_path: str | None,
+        background_music_volume: float | None,
+        subtitle_path: str | None,
+        aspect_ratio: str | None,
+        ai_watermark_enabled: bool,
+        output_path: str,
+        subtitle_style: dict | None = None,
+    ) -> None:
+        """执行单次 ffmpeg 合成命令。"""
+        command = [self.settings.ffmpeg_command, "-y", "-i", base_video_path, "-i", audio_path]
         if self.settings.enable_background_music and background_music_path:
             volume = background_music_volume if background_music_volume is not None else 0.18
             command.extend(
@@ -149,10 +144,12 @@ class FFmpegAdapter:
             )
         else:
             command.extend(["-map", "0:v", "-map", "1:a"])
+
+        vf = self._build_video_filter(subtitle_path, subtitle_style, aspect_ratio, ai_watermark_enabled)
+        if vf:
+            command.extend(["-vf", vf])
         command.extend(
             [
-                "-vf",
-                f"subtitles={self._escape_filter_path(subtitle_path)}",
                 "-c:v",
                 "libx264",
                 "-c:a",
@@ -160,28 +157,153 @@ class FFmpegAdapter:
                 "-movflags",
                 "+faststart",
                 "-shortest",
-                str(output_path),
+                output_path,
             ]
         )
-        subprocess.run(
-            command,
-            check=True,
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            tail = stderr[-2000:] if stderr else ""
+            detail = tail or str(exc)
+            raise RuntimeError(f"ffmpeg 合成失败（exit {exc.returncode}）: {detail}") from exc
+
+    def _build_video_filter(
+        self,
+        subtitle_path: str | None,
+        subtitle_style: dict | None,
+        aspect_ratio: str | None,
+        ai_watermark_enabled: bool,
+    ) -> str:
+        """构建 -vf 滤镜链。"""
+        filters: list[str] = []
+        if aspect_ratio:
+            filters.append(self._scale_crop_filter(aspect_ratio))
+        if subtitle_path and self._normalize_subtitle_style(subtitle_style).get("enabled", True):
+            filters.append(self._build_subtitle_filter(subtitle_path, subtitle_style, aspect_ratio))
+        if ai_watermark_enabled:
+            filters.append(
+                "drawtext=text='AI生成':fontcolor=white@0.6:fontsize=24:"
+                "x=w-tw-20:y=h-th-20:box=1:boxcolor=black@0.4:boxborderw=8"
+            )
+        return ",".join(filters)
+
+    def _scale_crop_filter(self, aspect_ratio: str) -> str:
+        """按画幅比例裁剪缩放。"""
+        mapping = {
+            "9:16": "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+            "16:9": "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
+            "1:1": "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080",
+        }
+        return mapping.get(aspect_ratio, mapping["9:16"])
+
+    def _output_dimensions(self, aspect_ratio: str | None) -> tuple[int, int]:
+        """成片目标分辨率（与 scale/crop 一致，供 libass 正确换算字号与边距）。"""
+        return _OUTPUT_DIMENSIONS.get(aspect_ratio or "9:16", _OUTPUT_DIMENSIONS["9:16"])
+
+    def _normalize_subtitle_style(self, subtitle_style: dict | None) -> dict:
+        """合并默认字幕样式，避免旧任务缺字段导致字号/位置异常。"""
+        return {**_DEFAULT_SUBTITLE_STYLE, **(subtitle_style or {})}
+
+    def _build_subtitle_filter(
+        self,
+        subtitle_path: str,
+        subtitle_style: dict | None,
+        aspect_ratio: str | None = None,
+    ) -> str:
+        """构建带样式的 subtitles 滤镜。
+
+        libass 必须指定 original_size，否则 FontSize/MarginV 会按错误分辨率缩放，
+        导致字幕偏大且无法贴底。
+        """
+        style = self._normalize_subtitle_style(subtitle_style)
+        if not style.get("enabled", True):
+            return ""
+        if not Path(subtitle_path).exists():
+            raise ValueError(f"字幕文件不存在: {subtitle_path}")
+        width, height = self._output_dimensions(aspect_ratio)
+        position = style.get("position", "bottom")
+        font_size = int(style.get("font_size", _DEFAULT_SUBTITLE_STYLE["font_size"]))
+        escaped = self._escape_filter_path(subtitle_path)
+        force_parts = [
+            f"FontSize={font_size}",
+            f"PrimaryColour={self._ass_color(style.get('color', '#FFFFFF'))}",
+            f"Outline={1 if font_size <= 24 else 2}" if style.get("stroke", True) else "Outline=0",
+            f"Alignment={self._ass_alignment(position)}",
+            f"MarginV={self._ass_margin_v(position, height)}",
+            "MarginL=40",
+            "MarginR=40",
+        ]
+        # 优先使用用户选择的字体，其次回退到 ffmpeg_font_path 配置，最后使用 SimHei
+        font_family = style.get("font_family")
+        if font_family:
+            force_parts.append(f"FontName={font_family}")
+        elif self.settings.ffmpeg_font_path:
+            force_parts.append(f"FontName={Path(self.settings.ffmpeg_font_path).stem}")
+        force_style = ",".join(force_parts)
+        # Windows 路径必须用引号包裹，并将反斜杠转为 C\:/posix/path，否则 libass 会解析失败。
+        return (
+            f"subtitles='{escaped}':original_size={width}x{height}:force_style='{force_style}'"
         )
-        return str(output_path)
+
+    def _ass_color(self, hex_color: str) -> str:
+        """#RRGGBB -> &H00BBGGRR& ASS 颜色。"""
+        value = hex_color.lstrip("#")
+        if len(value) != 6:
+            return "&H00FFFFFF&"
+        r, g, b = value[0:2], value[2:4], value[4:6]
+        return f"&H00{b}{g}{r}&"
+
+    def _ass_alignment(self, position: str) -> int:
+        """字幕位置映射 ASS Alignment。"""
+        return {"bottom": 2, "middle": 5, "top": 8}.get(position, 2)
+
+    def _ass_margin_v(self, position: str, height: int) -> int:
+        """ASS 垂直边距：底部/顶部分别距画面边缘一定像素，确保字幕贴底/贴顶。"""
+        if position == "top":
+            return max(32, int(height * 0.04))
+        if position == "middle":
+            return 0
+        return max(48, int(height * 0.05))
+
+    def extract_frame(self, video_path: str, output_path: str, time_seconds: float | None = None) -> str:
+        """从视频抽取单帧作为封面底图。"""
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if self.settings.use_stub_model_adapters:
+            output.write_bytes(b"stub frame")
+            return str(output)
+        command = [self.settings.ffmpeg_command, "-y", "-i", video_path]
+        if time_seconds is not None:
+            command.extend(["-ss", str(time_seconds)])
+        command.extend(["-frames:v", "1", str(output)])
+        subprocess.run(command, check=True)
+        return str(output)
+
+    def probe_duration(self, video_path: str) -> float | None:
+        """读取视频时长（秒）。"""
+        try:
+            result = subprocess.run(
+                [
+                    self.settings.ffprobe_command,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    video_path,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=15,
+            )
+            return round(float(result.stdout.strip()), 2)
+        except Exception:
+            return None
 
     def _to_srt(self, script: str, segments: list | None = None) -> str:
-        """将脚本或分段模型转为 SRT 文本。
-
-        用途：
-            内部方法，供 generate_subtitle 使用。
-
-        参数：
-            script:  fallback 全文，按行每 4 秒一条字幕。
-            segments: 优先使用，从对象属性读取时间与文案。
-
-        返回：
-            符合 SRT 格式的字符串。
-        """
         if segments:
             blocks = []
             for index, segment in enumerate(segments, start=1):
@@ -201,14 +323,6 @@ class FFmpegAdapter:
         return "\n".join(blocks)
 
     def _srt_time(self, seconds: float) -> str:
-        """将秒数格式化为 SRT 时间戳 `HH:MM:SS,mmm`。
-
-        参数：
-            seconds: 浮点秒数。
-
-        返回：
-            SRT 标准时间字符串。
-        """
         millis = int((seconds - int(seconds)) * 1000)
         total = int(seconds)
         hours = total // 3600
@@ -217,16 +331,8 @@ class FFmpegAdapter:
         return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
     def _escape_filter_path(self, path: str) -> str:
-        """转义字幕文件路径，避免 ffmpeg subtitles 滤镜解析错误。
-
-        用途：
-            FFmpeg subtitles filter 会把冒号等字符当作参数分隔符，需要单独转义路径。
-
-        参数：
-            path: 原始文件路径。
-
-        返回：
-            可用于 -vf subtitles= 的路径字符串。
-        """
-        # FFmpeg subtitles filter 会把冒号等字符当作参数分隔符，需要单独转义路径。
-        return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+        """将本地路径转为 ffmpeg subtitles 滤镜可识别的 quoted POSIX 形式。"""
+        posix = Path(path).resolve().as_posix()
+        if len(posix) >= 2 and posix[1] == ":":
+            posix = posix[0] + "\\:" + posix[2:]
+        return posix.replace("'", "\\'")

@@ -1,5 +1,5 @@
 /**
- * 用途：任务创建页，支持上传参考视频/填写链接或粘贴文案创建新任务。
+ * 用途：任务创建页，支持上传参考视频/填写链接或粘贴文案，进入分步创作流程。
  */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation } from '@tanstack/react-query'
@@ -12,7 +12,6 @@ import { StepNav } from '../components/StepNav'
 import { mockApi } from '../lib/api-client/mockApi'
 import type { AspectRatio } from '../types/domain'
 
-/** 创建任务表单的 Zod 校验 schema。 */
 const taskSchema = z.object({
   sourceMode: z.enum(['video', 'script']),
   videoInputMode: z.enum(['upload', 'url']),
@@ -23,19 +22,12 @@ const taskSchema = z.object({
 
 type TaskFormValues = z.infer<typeof taskSchema>
 
-/** 输出画幅比例选项列表。 */
 const aspectRatioOptions: Array<{ value: AspectRatio; label: string; description: string }> = [
   { value: '9:16', label: '9:16', description: '竖屏' },
   { value: '16:9', label: '16:9', description: '横屏' },
   { value: '1:1', label: '1:1', description: '方屏' },
 ]
 
-/**
- * 校验字符串是否为 http/https URL。
- *
- * @param value - 待检测字符串
- * @returns 合法 HTTP(S) URL 时为 true
- */
 const isValidHttpUrl = (value: string) => {
   try {
     const url = new URL(value)
@@ -45,16 +37,6 @@ const isValidHttpUrl = (value: string) => {
   }
 }
 
-/**
- * 新任务创建页面组件。
- *
- * @returns 含输入方式、画幅选择与提交表单的完整页面
- *
- * 逻辑：
- * - sourceMode=video 时按 upload/url 分支调用 createVideoTask；
- * - sourceMode=script 时调用 createScriptTask；
- * - 成功后 navigate 至文案确认页。
- */
 export function NewTaskPage() {
   const navigate = useNavigate()
   const [file, setFile] = useState<File | null>(null)
@@ -120,7 +102,7 @@ export function NewTaskPage() {
       <div className="page-heading">
         <p className="eyebrow">MVP 任务创建</p>
         <h1>创建数字人口播视频</h1>
-        <p>上传参考视频自动识别文案，或直接粘贴已有字幕 / 口播稿。</p>
+        <p>上传参考视频或填写公开链接自动识别文案，也可直接粘贴口播稿，随后逐步确认并生成。</p>
       </div>
 
       <form className="three-column" onSubmit={form.handleSubmit((values) => mutation.mutate(values))}>
@@ -128,7 +110,7 @@ export function NewTaskPage() {
           <h2>输入方式</h2>
           <label className="radio-card">
             <input type="radio" value="video" {...form.register('sourceMode')} />
-            上传参考视频
+            参考视频
           </label>
           <label className="radio-card">
             <input type="radio" value="script" {...form.register('sourceMode')} />
@@ -182,10 +164,10 @@ export function NewTaskPage() {
                   参考视频链接
                   <input
                     className="url-input"
-                    placeholder="https://example.com/reference-video.mp4"
+                    placeholder="粘贴抖音/快手/B站等公开链接"
                     {...form.register('videoUrl')}
                   />
-                  <span className="muted">支持公开可访问的视频链接，后续后端会下载或转存到任务存储目录。</span>
+                  <span className="muted">支持公开可访问的视频链接，后端会下载或转存到任务存储目录。</span>
                 </label>
               )}
             </div>
@@ -201,14 +183,13 @@ export function NewTaskPage() {
         </main>
 
         <aside className="panel">
-          <h2>创建说明</h2>
+          <h2>流程说明</h2>
           <ul className="hint-list">
-            <li>视频格式：MP4 / MOV</li>
-            <li>参考视频可上传文件或填写公开链接，二选一</li>
-            <li>MVP 建议 3 分钟以内</li>
-            <li>文案会进入确认页，不会直接生成</li>
-            <li>确认文案后会进行内容风险检查</li>
-            <li>素材授权会在上传音色或自拍视频时确认</li>
+            <li>视频格式：MP4 / MOV，建议 3 分钟以内</li>
+            <li>参考视频可上传或填公开链接</li>
+            <li>提交链接后会先进入文案页，下载与识别在后台进行（首次 Whisper 可能需数分钟）</li>
+            <li>文案确认 → 风险检查 → 生成配置 → 成片预览 → 发布</li>
+            <li>可在配置页调整语速、字幕、BGM、数字人等</li>
           </ul>
         </aside>
 
@@ -217,7 +198,11 @@ export function NewTaskPage() {
             重置
           </button>
           <button type="submit" className="primary-button" disabled={mutation.isPending}>
-            {mutation.isPending ? '创建中...' : '创建任务'}
+            {mutation.isPending
+              ? sourceMode === 'video'
+                ? '正在提交...'
+                : '创建中...'
+              : '创建任务并进入文案确认'}
           </button>
         </footer>
       </form>

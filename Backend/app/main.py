@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.core.exceptions import ApiError, api_error_handler, http_error_handler, success_response
 from app.core.logging import configure_logging
 from app.db.base import Base
-from app.db.init_db import seed_profiles
+from app.db.init_db import ensure_runtime_schema, seed_profiles
 from app.db.session import SessionLocal, engine
 
 
@@ -31,6 +31,7 @@ async def lifespan(_: FastAPI):
     """
     # 本地开发允许自动建表；生产环境仍建议使用 Alembic migration 管理结构变更。
     Base.metadata.create_all(bind=engine)
+    ensure_runtime_schema(engine)
     with SessionLocal() as db:
         seed_profiles(db)
     yield

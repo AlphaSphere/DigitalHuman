@@ -54,6 +54,28 @@ def _display_name(path: Path) -> str:
     return path.stem.replace("_", " ").replace("-", " ").strip().title()
 
 
+def pick_random_music_track() -> dict | None:
+    """从音乐库随机选择一首曲目。"""
+    import random
+
+    tracks = list_music_tracks()
+    if not tracks:
+        return None
+    return random.choice(tracks)
+
+
+def resolve_background_music_path(mode: str | None, fixed_path: str | None) -> str | None:
+    """根据背景音乐模式解析实际文件路径。"""
+    from app.domain.enums import BackgroundMusicMode
+
+    if mode == BackgroundMusicMode.random.value or mode == "random":
+        track = pick_random_music_track()
+        return track["path"] if track else None
+    if mode == BackgroundMusicMode.none.value or mode == "none":
+        return None
+    return fixed_path
+
+
 def _duration_seconds(ffprobe_command: str, path: Path) -> float | None:
     """通过 ffprobe 读取音频时长（秒），失败返回 None。"""
     try:

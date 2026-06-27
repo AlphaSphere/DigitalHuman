@@ -9,29 +9,36 @@
 
 import json
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.core.exceptions import success_response
-from app.schemas.domain import CreateScriptTaskRequest, SaveGenerationConfigRequest
+from app.core.exceptions import ApiError, success_response
+from app.schemas.domain import CreateScriptTaskRequest, GeneratePublishMetadataRequest, RewriteScriptRequest, SaveGenerationConfigRequest
+from app.domain.enums import GenerationVideoMode, GenerationVoiceMode, TaskStatus
+from app.services.rewrite_service import generate_publish_metadata, rewrite_script
 from app.services.serializers import task_to_dict
 from app.services.storage_service import save_upload
+from app.services.task_enqueue import enqueue_transcribe, enqueue_generation
 from app.services.task_service import (
     create_script_task,
     create_video_task,
     ensure_task,
+    mark_generation_started,
+    prepare_for_generation,
+    resolve_source_video_file,
     retry_task,
     save_generation_config,
-    start_generate,
 )
-from app.workers.tasks import run_generation_pipeline, transcribe_video_task
+from app.services.task_guards import assert_not_in_generation
 
 router = APIRouter()
 
 
 @router.post("/tasks/video")
 def create_video(
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     file: UploadFile | None = File(default=None),
     source_url: str | None = Form(default=None),
@@ -52,10 +59,10 @@ def create_video(
         success_response 包裹的任务 dict（不含 progress）。
 
     逻辑：
-        create_video_task 落库后 transcribe_video_task.delay(task.id)。
+        create_video_task 落库后立即返回；transcribe_video_task 在后台执行。
     """
     task = create_video_task(db, file, source_url, aspect_ratio)
-    transcribe_video_task.delay(task.id)
+    enqueue_transcribe(background_tasks, task.id)
     return success_response(task_to_dict(task))
 
 
@@ -99,6 +106,36 @@ def get_task(task_id: str, db: Session = Depends(get_db)) -> dict:
     return success_response(task_to_dict(ensure_task(db, task_id)))
 
 
+@router.post("/tasks/{task_id}/retranscribe")
+def retranscribe(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict:
+    """重新下载/识别参考视频文案。"""
+    task = ensure_task(db, task_id)
+    if task.script_source != "video_asr":
+        raise ApiError("VALIDATION_ERROR", "仅视频任务支持重新识别")
+    assert_not_in_generation(task, "重新识别")
+    task.status = TaskStatus.uploaded.value
+    task.error_code = None
+    task.error_message = None
+    db.commit()
+    enqueue_transcribe(background_tasks, task_id)
+    task = ensure_task(db, task_id)
+    return success_response(task_to_dict(task))
+
+
+@router.get("/tasks/{task_id}/source-video")
+def source_video_preview(task_id: str, db: Session = Depends(get_db)) -> FileResponse:
+    """流式返回任务参考视频（本地转存后），供文案页预览。"""
+    task = ensure_task(db, task_id)
+    video_path = resolve_source_video_file(task)
+    if not video_path:
+        raise ApiError("NOT_FOUND", "参考视频尚未就绪或仍为远程链接", 404)
+    return FileResponse(video_path, media_type="video/mp4", filename=video_path.name)
+
+
 @router.post("/tasks/{task_id}/generation-config")
 def save_config(
     task_id: str,
@@ -125,11 +162,14 @@ def save_config(
     逻辑：
         save_generation_config 写库；若有上传文件则 save_upload 覆盖 path 并二次 commit。
     """
-    payload = SaveGenerationConfigRequest.model_validate(json.loads(config))
+    try:
+        payload = SaveGenerationConfigRequest.model_validate(json.loads(config))
+    except json.JSONDecodeError as exc:
+        raise ApiError("VALIDATION_ERROR", "配置 JSON 格式无效", 400) from exc
     task = save_generation_config(db, task_id, payload)
-    if custom_voice_file:
+    if custom_voice_file and payload.generation_voice_mode == GenerationVoiceMode.uploaded_voice.value:
         task.custom_voice_path = save_upload(task_id, custom_voice_file, "custom_voice")
-    if custom_video_file:
+    if custom_video_file and payload.generation_video_mode == GenerationVideoMode.uploaded_video.value:
         task.custom_video_path = save_upload(task_id, custom_video_file, "custom_video")
     db.commit()
     db.refresh(task)
@@ -137,7 +177,7 @@ def save_config(
 
 
 @router.post("/tasks/{task_id}/generate")
-def generate(task_id: str, db: Session = Depends(get_db)) -> dict:
+def generate(task_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
     """开始视频生成流水线。
 
     用途：
@@ -151,15 +191,16 @@ def generate(task_id: str, db: Session = Depends(get_db)) -> dict:
         status 已变为 dubbing 的任务 dict。
 
     逻辑：
-        start_generate 校验风险状态后 run_generation_pipeline.delay(task_id)。
+        start_generate 校验风险状态后异步投递 run_generation_pipeline。
     """
-    task = start_generate(db, task_id)
-    run_generation_pipeline.delay(task_id)
+    task = prepare_for_generation(db, task_id)
+    enqueue_generation(background_tasks, task_id)
+    task = mark_generation_started(db, task_id)
     return success_response(task_to_dict(task))
 
 
 @router.post("/tasks/{task_id}/retry")
-def retry(task_id: str, db: Session = Depends(get_db)) -> dict:
+def retry(task_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> dict:
     """重试失败的生成流水线。
 
     用途：
@@ -173,8 +214,20 @@ def retry(task_id: str, db: Session = Depends(get_db)) -> dict:
         status=retrying 的任务 dict。
 
     逻辑：
-        retry_task 后 run_generation_pipeline.delay(task_id)。
+        retry_task 后异步投递 run_generation_pipeline。
     """
     task = retry_task(db, task_id)
-    run_generation_pipeline.delay(task_id)
+    enqueue_generation(background_tasks, task_id)
     return success_response(task_to_dict(task))
+
+
+@router.post("/tasks/{task_id}/rewrite-script")
+def rewrite(task_id: str, payload: RewriteScriptRequest, db: Session = Depends(get_db)) -> dict:
+    return success_response(
+        rewrite_script(db, task_id, payload.mode, payload.instruction, payload.style)
+    )
+
+
+@router.post("/tasks/{task_id}/generate-publish-metadata")
+def publish_metadata(task_id: str, payload: GeneratePublishMetadataRequest, db: Session = Depends(get_db)) -> dict:
+    return success_response(generate_publish_metadata(db, task_id, payload.platform, payload.tone))

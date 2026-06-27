@@ -21,6 +21,8 @@ class SubtitleStyle(BaseModel):
     position: Literal["bottom", "middle", "top"] = "bottom"
     color: str
     stroke: bool = True
+    # 字幕字体系列，默认 SimHei（黑体），支持系统已安装的中文字体
+    font_family: str = "SimHei"
 
 
 class TaskOut(BaseModel):
@@ -31,15 +33,28 @@ class TaskOut(BaseModel):
     script_generation_mode: str | None = None
     status: str
     source_video_path: str | None = None
+    source_url: str | None = None
     duration: float | None = None
     aspect_ratio: str | None = None
+    pipeline_mode: str | None = None
+    pipeline_stage: dict[str, Any] | None = None
     generation_voice_mode: str | None = None
     custom_voice_path: str | None = None
+    custom_voice_prompt_text: str | None = None
     generation_video_mode: str | None = None
     custom_video_path: str | None = None
     voice_profile_id: str | None = None
     avatar_profile_id: str | None = None
     subtitle_style: SubtitleStyle | None = None
+    voice_speed: float | None = None
+    background_music_path: str | None = None
+    background_music_mode: str | None = None
+    background_music_volume: float | None = None
+    ai_watermark_enabled: bool | None = None
+    export_without_subtitle: bool | None = None
+    avatar_engine: str | None = None
+    generation_quality: Literal["fast", "full"] | None = None
+    tuilionnx_sync_offset: int | None = None
     error_code: str | None = None
     error_message: str | None = None
     created_at: datetime
@@ -93,13 +108,21 @@ class SaveGenerationConfigRequest(BaseModel):
     avatar_profile_id: str
     generation_voice_mode: Literal["uploaded_voice", "preset_voice"]
     custom_voice_file_name: str | None = None
-    generation_video_mode: Literal["uploaded_video", "preset_avatar"]
+    custom_voice_prompt_text: str | None = Field(default=None, max_length=500)
+    generation_video_mode: Literal["uploaded_video", "preset_avatar", "tuilionnx_avatar"]
     custom_video_file_name: str | None = None
     authorization_confirmed: bool = False
     aspect_ratio: AspectRatio = "9:16"
     subtitle_style: SubtitleStyle
     background_music_path: str | None = None
+    background_music_mode: Literal["none", "fixed", "random"] = "fixed"
     background_music_volume: float = Field(default=0.18, ge=0, le=1)
+    voice_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    ai_watermark_enabled: bool = False
+    export_without_subtitle: bool = False
+    avatar_engine: Literal["heygem", "tuilionnx"] = "heygem"
+    generation_quality: Literal["fast", "full"] = "full"
+    tuilionnx_sync_offset: int = Field(default=0, ge=-10, le=10)
 
 
 class RiskFindingOut(BaseModel):
@@ -133,6 +156,12 @@ class ConfirmRiskRequest(BaseModel):
 
     confirmed: bool = True
     confirmation_note: str
+
+
+class ConfirmScriptRequest(BaseModel):
+    """用途：确认文案并进入配置页；warning/manual_review 时可附带确认说明。"""
+
+    confirmation_note: str | None = None
 
 
 class ArtifactOut(BaseModel):
@@ -193,6 +222,65 @@ class CreateDistributionRequest(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     description: str = ""
     tags: list[str] = []
+    cover_artifact_id: str | None = None
+
+
+class BatchDistributionRequest(BaseModel):
+    """批量多平台分发。"""
+
+    platforms: list[
+        Literal["douyin", "xiaohongshu", "bilibili", "wechat_channels", "kuaishou", "tiktok", "youtube"]
+    ]
+    title: str = Field(min_length=1, max_length=100)
+    description: str = ""
+    tags: list[str] = []
+    cover_artifact_id: str | None = None
+
+
+class RewriteScriptRequest(BaseModel):
+    mode: Literal["auto", "instruction"] = "auto"
+    instruction: str | None = None
+    style: Literal["viral_spoken", "formal", "humorous", "custom"] | None = "viral_spoken"
+
+
+class GeneratePublishMetadataRequest(BaseModel):
+    platform: str | None = None
+    tone: Literal["viral", "professional", "casual"] = "viral"
+
+
+class GenerateCoverRequest(BaseModel):
+    cover_text: str = ""
+    highlight_words: list[str] = []
+    frame_path: str | None = None
+    font_size: int = 60
+    font_color: str = "#FFFFFF"
+    highlight_color: str = "#FFD600"
+    position: Literal["top", "center", "bottom"] = "bottom"
+    use_ai_copy: bool = False
+    script: str | None = None
+
+
+class OneClickPipelineRequest(BaseModel):
+    source_url: str | None = None
+    aspect_ratio: AspectRatio = "9:16"
+    rewrite_enabled: bool = True
+    rewrite_mode: Literal["auto", "instruction"] = "auto"
+    rewrite_instruction: str | None = None
+    rewrite_style: Literal["viral_spoken", "formal", "humorous", "custom"] | None = "viral_spoken"
+    generation_preset: SaveGenerationConfigRequest | None = None
+    publish_platforms: list[str] = []
+    auto_generate_metadata: bool = True
+    auto_generate_cover: bool = False
+    auto_confirm_risk: bool = False
+    voice_speed: float = 1.0
+    background_music_mode: Literal["none", "fixed", "random"] = "random"
+    ai_watermark_enabled: bool = True
+    export_without_subtitle: bool = False
+    avatar_engine: Literal["heygem", "tuilionnx"] = "heygem"
+    generation_quality: Literal["fast", "full"] = "fast"
+    generation_voice_mode: Literal["uploaded_voice", "preset_voice"] | None = None
+    require_config_before_generate: bool = True
+    cover_artifact_id: str | None = None
 
 
 class DistributionRecordOut(BaseModel):

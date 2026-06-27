@@ -8,6 +8,8 @@ dependencies = [
   "celery>=5.5.0",
   "fastapi>=0.115.0",
   "httpx>=0.28.0",
+  "pillow>=11.0.0",
+  "playwright>=1.49.0",
   "pydantic>=2.10.0",
   "pydantic-settings>=2.7.0",
   "pymysql>=1.1.1",
@@ -22,6 +24,10 @@ dev = [
   "pytest>=8.3.0",
   "ruff>=0.8.0"
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
 
 [build-system]
 requires = ["setuptools>=69"]

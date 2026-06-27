@@ -35,17 +35,24 @@ interface StatusBadgeProps {
   status: TaskStatus
   /** 展示给用户的中文状态文案 */
   label: string
+  /** 可点击时作为按钮渲染（如失败态查看详情） */
+  onClick?: () => void
+  title?: string
 }
 
 /**
  * 渲染任务状态徽章。
- *
- * @param props.status - 决定 CSS 色调类名
- * @param props.label - 徽章内显示文本
- * @returns span.status-badge 元素
- *
- * 逻辑：通过 statusTone 查表附加 success/warning/danger/info 类。
  */
-export function StatusBadge({ status, label }: StatusBadgeProps) {
-  return <span className={`status-badge ${statusTone[status]}`}>{label}</span>
+export function StatusBadge({ status, label, onClick, title }: StatusBadgeProps) {
+  const className = `status-badge ${statusTone[status]}${onClick ? ' status-badge-clickable' : ''}`
+
+  if (onClick) {
+    return (
+      <button type="button" className={className} onClick={onClick} title={title}>
+        {label}
+      </button>
+    )
+  }
+
+  return <span className={className}>{label}</span>
 }

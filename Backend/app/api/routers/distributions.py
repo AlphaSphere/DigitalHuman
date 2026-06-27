@@ -9,8 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.exceptions import success_response
-from app.schemas.domain import CreateDistributionRequest
-from app.services.distribution_service import create_distribution, get_distribution, list_distributions
+from app.schemas.domain import BatchDistributionRequest, CreateDistributionRequest
+from app.services.distribution_service import (
+    create_batch_distributions,
+    create_distribution,
+    get_distribution,
+    list_distributions,
+)
 from app.services.serializers import distribution_to_dict
 from app.workers.tasks import run_distribution_task
 
@@ -58,6 +63,23 @@ def create(task_id: str, payload: CreateDistributionRequest, db: Session = Depen
     record = create_distribution(db, task_id, payload)
     run_distribution_task.delay(record.id)
     return success_response(distribution_to_dict(record))
+
+
+@router.post("/tasks/{task_id}/distributions/batch")
+def create_batch(task_id: str, payload: BatchDistributionRequest, db: Session = Depends(get_db)) -> dict:
+    ids = create_batch_distributions(
+        db,
+        task_id,
+        payload.platforms,
+        payload.title,
+        payload.description,
+        payload.tags,
+        payload.cover_artifact_id,
+    )
+    from app.workers.tasks import run_batch_distribution_task
+
+    run_batch_distribution_task.delay(task_id, ids)
+    return success_response({"distribution_ids": ids, "count": len(ids)})
 
 
 @router.post("/distributions/{distribution_id}/retry")

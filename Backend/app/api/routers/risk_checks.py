@@ -4,12 +4,16 @@
 列表查询、人工确认放行、发布前元信息校验。
 """
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from sqlalchemy import select
+
 from app.api.deps import get_db
 from app.core.exceptions import ApiError, success_response
-from app.domain.enums import RiskStage
+from app.domain.enums import ArtifactType, RiskStage, RiskStatus, TaskStatus
 from app.schemas.domain import ConfirmRiskRequest, PrePublishCheckInput
 from app.services.risk_service import (
     build_pre_publish_findings,
@@ -18,6 +22,8 @@ from app.services.risk_service import (
     replace_risk_check,
 )
 from app.services.serializers import risk_check_to_dict
+from app.services.task_service import ensure_task
+from app.db.models import ArtifactModel
 
 router = APIRouter()
 
@@ -40,6 +46,7 @@ def list_checks(task_id: str, stage: RiskStage | None = Query(default=None), db:
     逻辑：
         get_risk_checks 预加载 findings 后 risk_check_to_dict。
     """
+    ensure_task(db, task_id)
     return success_response([risk_check_to_dict(item) for item in get_risk_checks(db, task_id, stage)])
 
 
@@ -87,7 +94,27 @@ def pre_publish_check(task_id: str, payload: PrePublishCheckInput, db: Session =
     逻辑：
         build_pre_publish_findings → replace_risk_check → commit。
     """
+    task = ensure_task(db, task_id)
+    if task.status != TaskStatus.completed.value:
+        raise ApiError("VALIDATION_ERROR", "请先完成视频生成后再进行发布前检查", 409)
+    final_video = db.scalar(
+        select(ArtifactModel).where(
+            ArtifactModel.task_id == task_id,
+            ArtifactModel.type == ArtifactType.final_video.value,
+        )
+    )
+    if not final_video:
+        raise ApiError("VALIDATION_ERROR", "未找到成片产物，无法执行发布前检查", 409)
     risk_check = replace_risk_check(db, task_id, RiskStage.pre_publish, build_pre_publish_findings(payload))
+    task.status = TaskStatus.publish_checking.value
+    db.flush()
+    if risk_check.risk_status == RiskStatus.blocked.value:
+        task.status = TaskStatus.publish_blocked.value
+    elif risk_check.risk_status == RiskStatus.passed.value:
+        task.status = TaskStatus.publish_ready.value
+    else:
+        task.status = TaskStatus.publish_blocked.value
+    task.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(risk_check)
     return success_response(risk_check_to_dict(risk_check))

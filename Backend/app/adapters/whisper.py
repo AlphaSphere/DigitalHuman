@@ -50,8 +50,25 @@ class WhisperAdapter:
         if not source_video_path:
             raise ValueError("Whisper 识别需要 source_video_path")
         if self.settings.whisper_base_url:
-            return self._transcribe_http(source_video_path)
+            try:
+                return self._transcribe_http(source_video_path)
+            except Exception as exc:
+                # 本地桌面常见：Whisper HTTP 未启动，回退 CLI
+                if self._can_use_cli():
+                    return self._transcribe_cli(source_video_path, task_id)
+                raise RuntimeError(
+                    f"Whisper 服务不可用且未找到本地命令 {self.settings.whisper_command}，请安装 openai-whisper 或启动 Whisper 服务"
+                ) from exc
+        if not self._can_use_cli():
+            raise RuntimeError(
+                f"未配置 Whisper 服务，且本地未安装 {self.settings.whisper_command}，无法识别视频文案"
+            )
         return self._transcribe_cli(source_video_path, task_id)
+
+    def _can_use_cli(self) -> bool:
+        from shutil import which
+
+        return which(self.settings.whisper_command) is not None
 
     def _transcribe_http(self, source_video_path: str) -> list[dict]:
         """通过 Whisper HTTP 微服务转写。
@@ -70,7 +87,8 @@ class WhisperAdapter:
             2. 校验状态码，解析 segments 字段。
             3. 归一化字段名（start/end → start_time/end_time）。
         """
-        with httpx.Client(timeout=self.settings.model_http_timeout_seconds) as client:
+        # trust_env=False：禁用系统代理，防止代理拦截本地服务请求
+        with httpx.Client(timeout=self.settings.model_http_timeout_seconds, trust_env=False) as client:
             response = client.post(
                 f"{self.settings.whisper_base_url}/transcribe",
                 json={

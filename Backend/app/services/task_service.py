@@ -8,11 +8,14 @@
 """
 
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import UploadFile
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.adapters.url_download import UrlDownloadAdapter
+from app.core.config import get_settings
 from app.core.exceptions import ApiError
 from app.db.models import (
     ArtifactModel,
@@ -26,6 +29,9 @@ from app.domain.enums import (
     AuthorizationSource,
     GenerationVideoMode,
     GenerationVoiceMode,
+    RiskStage,
+    RiskStatus,
+    ReviewedBy,
     ScriptSource,
     SegmentSource,
     TaskStatus,
@@ -33,9 +39,11 @@ from app.domain.enums import (
 from app.domain.status import build_progress
 from app.schemas.domain import CreateScriptTaskRequest, SaveGenerationConfigRequest
 from app.services.id_service import create_id
+from app.services.risk_service import get_risk_checks
 from app.services.script_parser import build_segments
 from app.services.serializers import artifact_to_dict, task_to_dict
-from app.services.storage_service import save_upload, write_text
+from app.services.storage_service import save_upload, task_dir, write_text
+from app.services.task_guards import assert_can_retry_generation, is_stale_generation
 
 
 def ensure_task(db: Session, task_id: str) -> TaskModel:
@@ -73,15 +81,16 @@ def create_video_task(db: Session, upload: UploadFile | None, source_url: str | 
         aspect_ratio: 画幅比例，默认 9:16。
 
     返回：
-        已 commit 的 TaskModel（status=uploaded，含初始 whisper 段落）。
+        已 commit 的 TaskModel（status=uploaded，等待 transcribe_video_task 写入段落）。
 
     逻辑：
         生成 task_id，有 upload 则 save_upload；
-        写入 TaskModel、build_segments(whisper)、可选 source_video 产物记录。
+        写入 TaskModel 与可选 source_video 产物记录；ASR 段落由 transcribe_video_task 生成。
     """
     if not upload and not source_url:
         raise ApiError("VALIDATION_ERROR", "请上传参考视频或填写视频链接")
     task_id = create_id("task")
+    stored_url = source_url if source_url and not upload else None
     source_path = source_url
     if upload:
         source_path = save_upload(task_id, upload, "source")
@@ -91,6 +100,7 @@ def create_video_task(db: Session, upload: UploadFile | None, source_url: str | 
         script_generation_mode="full_script",
         status=TaskStatus.uploaded.value,
         source_video_path=source_path,
+        source_url=stored_url,
         duration=62.5,
         aspect_ratio=aspect_ratio,
         error_code=None,
@@ -100,8 +110,6 @@ def create_video_task(db: Session, upload: UploadFile | None, source_url: str | 
     )
     db.add(task)
     db.flush()
-    for item in build_segments(task_id, SegmentSource.whisper):
-        db.add(ScriptSegmentModel(**item))
     if source_path:
         db.add(
             ArtifactModel(
@@ -177,6 +185,22 @@ def get_task_payload(task: TaskModel) -> dict:
     return {**task_to_dict(task), "progress": build_progress(TaskStatus(task.status))}
 
 
+def _resolve_stored_file(path_value: str | None) -> Path | None:
+    """将任务素材路径解析为绝对路径并校验文件是否存在。"""
+    if not path_value:
+        return None
+    settings = get_settings()
+    candidate = Path(path_value)
+    if candidate.is_absolute():
+        return candidate if candidate.exists() else None
+    if path_value.startswith("storage/"):
+        candidate = settings.storage_root.parent / path_value
+    else:
+        candidate = settings.storage_root / path_value
+    candidate = candidate.resolve()
+    return candidate if candidate.exists() else None
+
+
 def save_generation_config(db: Session, task_id: str, payload: SaveGenerationConfigRequest) -> TaskModel:
     """保存生成配置（音色/形象/字幕/音乐）及上传素材授权记录。
 
@@ -196,10 +220,15 @@ def save_generation_config(db: Session, task_id: str, payload: SaveGenerationCon
         更新 Task 生成相关字段，删除旧授权记录后按 voice/video 资产重建 AuthorizationRecordModel。
     """
     task = ensure_task(db, task_id)
-    if payload.generation_voice_mode == GenerationVoiceMode.uploaded_voice.value and not payload.custom_voice_file_name:
-        raise ApiError("VALIDATION_ERROR", "请先上传自己的音色样本")
-    if payload.generation_video_mode == GenerationVideoMode.uploaded_video.value and not payload.custom_video_file_name:
-        raise ApiError("VALIDATION_ERROR", "请先上传自己拍摄的视频素材")
+    existing_voice = _resolve_stored_file(task.custom_voice_path)
+    existing_video = _resolve_stored_file(task.custom_video_path)
+
+    if payload.generation_voice_mode == GenerationVoiceMode.uploaded_voice.value:
+        if not payload.custom_voice_file_name and not existing_voice:
+            raise ApiError("VALIDATION_ERROR", "请先上传自己的音色样本")
+    if payload.generation_video_mode == GenerationVideoMode.uploaded_video.value:
+        if not payload.custom_video_file_name and not existing_video:
+            raise ApiError("VALIDATION_ERROR", "请先上传自己拍摄的视频素材")
     if (
         payload.generation_voice_mode == GenerationVoiceMode.uploaded_voice.value
         or payload.generation_video_mode == GenerationVideoMode.uploaded_video.value
@@ -209,21 +238,34 @@ def save_generation_config(db: Session, task_id: str, payload: SaveGenerationCon
     task.voice_profile_id = payload.voice_profile_id
     task.avatar_profile_id = payload.avatar_profile_id
     task.generation_voice_mode = payload.generation_voice_mode
-    task.custom_voice_path = (
-        f"storage/tasks/{task_id}/input/{payload.custom_voice_file_name}"
-        if payload.generation_voice_mode == GenerationVoiceMode.uploaded_voice.value
-        else None
-    )
+    if payload.generation_voice_mode == GenerationVoiceMode.uploaded_voice.value:
+        if payload.custom_voice_file_name:
+            task.custom_voice_path = str((task_dir(task_id) / "input" / payload.custom_voice_file_name).resolve())
+        elif existing_voice:
+            task.custom_voice_path = str(existing_voice)
+        task.custom_voice_prompt_text = payload.custom_voice_prompt_text.strip() if payload.custom_voice_prompt_text else None
+    else:
+        task.custom_voice_path = None
+        task.custom_voice_prompt_text = None
     task.generation_video_mode = payload.generation_video_mode
-    task.custom_video_path = (
-        f"storage/tasks/{task_id}/input/{payload.custom_video_file_name}"
-        if payload.generation_video_mode == GenerationVideoMode.uploaded_video.value
-        else None
-    )
+    if payload.generation_video_mode == GenerationVideoMode.uploaded_video.value:
+        if payload.custom_video_file_name:
+            task.custom_video_path = str((task_dir(task_id) / "input" / payload.custom_video_file_name).resolve())
+        elif existing_video:
+            task.custom_video_path = str(existing_video)
+    else:
+        task.custom_video_path = None
     task.aspect_ratio = payload.aspect_ratio
     task.subtitle_style = payload.subtitle_style.model_dump()
     task.background_music_path = payload.background_music_path
+    task.background_music_mode = payload.background_music_mode
     task.background_music_volume = payload.background_music_volume
+    task.voice_speed = payload.voice_speed
+    task.ai_watermark_enabled = payload.ai_watermark_enabled
+    task.export_without_subtitle = payload.export_without_subtitle
+    task.avatar_engine = payload.avatar_engine
+    task.generation_quality = payload.generation_quality
+    task.tuilionnx_sync_offset = payload.tuilionnx_sync_offset
     task.updated_at = datetime.utcnow()
 
     db.execute(delete(AuthorizationRecordModel).where(AuthorizationRecordModel.task_id == task_id))
@@ -249,6 +291,105 @@ def save_generation_config(db: Session, task_id: str, payload: SaveGenerationCon
     return task
 
 
+def _ensure_ready_for_generation(db: Session, task: TaskModel) -> None:
+    """校验文案合规门禁，必要时将任务推进到 script_confirmed。"""
+    if task.status == TaskStatus.content_rejected.value:
+        raise ApiError("CONTENT_BLOCKED", "内容已被阻断，请返回修改文案", 409)
+
+    checks = get_risk_checks(db, task.id, RiskStage.script)
+    latest = checks[0] if checks else None
+
+    if task.status == TaskStatus.content_review_required.value:
+        if not latest:
+            raise ApiError("CONTENT_BLOCKED", "请先完成文案合规检查", 409)
+        if latest.risk_status == RiskStatus.blocked.value:
+            raise ApiError("CONTENT_BLOCKED", "内容已被阻断，请返回修改文案", 409)
+        if latest.risk_status in {RiskStatus.warning.value, RiskStatus.manual_review.value}:
+            if latest.reviewed_by != ReviewedBy.user.value:
+                raise ApiError(
+                    "CONTENT_REVIEW_REQUIRED",
+                    "文案合规待人工确认，请返回「文案与合规」页填写确认说明",
+                    409,
+                )
+        task.status = TaskStatus.script_confirmed.value
+        return
+
+    if task.status == TaskStatus.transcribed.value or task.status == TaskStatus.script_parsed.value:
+        if latest and latest.risk_status == RiskStatus.passed.value:
+            task.status = TaskStatus.script_confirmed.value
+            return
+        raise ApiError("VALIDATION_ERROR", "请先完成文案确认与合规检查", 409)
+
+    if task.status == TaskStatus.failed.value:
+        if task.error_code == "TRANSCRIBE_FAILED":
+            raise ApiError("TRANSCRIBE_FAILED", "请先完成文案识别后再生成", 409)
+        if latest and latest.risk_status == RiskStatus.blocked.value:
+            raise ApiError("CONTENT_BLOCKED", "内容已被阻断，请返回修改文案", 409)
+        # 已进入过生成流水线的失败任务，允许直接重试，无需再次跑合规。
+        task.status = TaskStatus.script_confirmed.value
+        task.error_code = None
+        task.error_message = None
+        return
+
+    if task.status != TaskStatus.script_confirmed.value:
+        raise ApiError("VALIDATION_ERROR", "请先完成文案确认后再开始生成", 409)
+
+
+GENERATION_ARTIFACT_TYPES = (
+    ArtifactType.tts_audio.value,
+    ArtifactType.avatar_video.value,
+    ArtifactType.subtitle.value,
+    ArtifactType.final_video.value,
+    ArtifactType.final_video_no_subtitle.value,
+)
+
+
+def clear_generation_artifacts(db: Session, task_id: str) -> None:
+    """重试前清理旧生成产物记录，避免下载/预览取到过期文件。"""
+    db.execute(
+        delete(ArtifactModel).where(
+            ArtifactModel.task_id == task_id,
+            ArtifactModel.type.in_(GENERATION_ARTIFACT_TYPES),
+        )
+    )
+
+
+def prepare_for_generation(db: Session, task_id: str) -> TaskModel:
+    """校验合规并推进到 script_confirmed，但不进入 dubbing。"""
+    task = ensure_task(db, task_id)
+    _ensure_ready_for_generation(db, task)
+    _ensure_generation_voice_ready(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def _ensure_generation_voice_ready(task: TaskModel) -> None:
+    """生成前校验音色配置，避免「已上传样本却仍走默认音色」。"""
+    if not task.generation_voice_mode:
+        raise ApiError("VALIDATION_ERROR", "请先在配置页保存生成参数（音色、数字人、字幕等）")
+    if task.generation_voice_mode != GenerationVoiceMode.uploaded_voice.value:
+        return
+    voice_file = _resolve_stored_file(task.custom_voice_path)
+    if not voice_file:
+        raise ApiError(
+            "VALIDATION_ERROR",
+            "已选择上传自己的音色，但未找到有效音频样本，请回到配置页重新上传并保存",
+        )
+
+
+def mark_generation_started(db: Session, task_id: str) -> TaskModel:
+    """投递流水线成功后，将任务标记为 dubbing。"""
+    task = ensure_task(db, task_id)
+    task.status = TaskStatus.dubbing.value
+    task.error_code = None
+    task.error_message = None
+    task.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(task)
+    return task
+
+
 def start_generate(db: Session, task_id: str) -> TaskModel:
     """将任务置为生成中状态（配音阶段入口）。
 
@@ -263,17 +404,9 @@ def start_generate(db: Session, task_id: str) -> TaskModel:
         status=dubbing 的 TaskModel。
 
     逻辑：
-        若仍处于内容待审/已拒绝则 409；
-        否则更新 status 与 updated_at 并 commit。
+        校验文案合规与任务状态；由路由层 enqueue 后再 mark_generation_started。
     """
-    task = ensure_task(db, task_id)
-    if task.status in {TaskStatus.content_review_required.value, TaskStatus.content_rejected.value}:
-        raise ApiError("CONTENT_BLOCKED", "请先处理内容风险后再开始生成", 409)
-    task.status = TaskStatus.dubbing.value
-    task.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(task)
-    return task
+    return prepare_for_generation(db, task_id)
 
 
 def retry_task(db: Session, task_id: str) -> TaskModel:
@@ -290,9 +423,19 @@ def retry_task(db: Session, task_id: str) -> TaskModel:
         status=retrying 的 TaskModel。
 
     逻辑：
-        清空 error_code/error_message，更新 updated_at。
+        卡住超时的生成任务强制重置；校验 error_code；清理旧产物；置 retrying。
     """
     task = ensure_task(db, task_id)
+    if is_stale_generation(task):
+        task.status = TaskStatus.failed.value
+        task.error_code = "GENERATION_FAILED"
+        task.error_message = "生成阶段长时间无更新，已允许强制重试"
+        task.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(task)
+    assert_can_retry_generation(task)
+    _ensure_ready_for_generation(db, task)
+    clear_generation_artifacts(db, task_id)
     task.status = TaskStatus.retrying.value
     task.error_code = None
     task.error_message = None
@@ -369,3 +512,21 @@ def task_with_relationships(db: Session, task_id: str) -> TaskModel:
     if not task:
         raise ApiError("NOT_FOUND", "任务不存在", 404)
     return task
+
+
+def resolve_source_video_file(task: TaskModel) -> Path | None:
+    """解析任务参考视频的本地文件路径（URL 或未落盘时返回 None）。"""
+    if not task.source_video_path:
+        return None
+    adapter = UrlDownloadAdapter()
+    if adapter.is_remote_url(task.source_video_path):
+        return None
+
+    candidate = Path(task.source_video_path)
+    if candidate.exists():
+        return candidate
+
+    storage_path = get_settings().storage_root / str(task.source_video_path).replace("\\", "/")
+    if storage_path.exists():
+        return storage_path
+    return None

@@ -20,6 +20,7 @@ services:
       DATABASE_URL: mysql+pymysql://digital_human:digital_human@mysql:3306/digital_human
       REDIS_URL: redis://redis:6379/0
       STORAGE_ROOT: /app/storage
+      TUILIONNX_BASE_URL: http://tuilionnx:8004
     ports:
       - "8000:8000"
     volumes:
@@ -40,6 +41,7 @@ services:
       DATABASE_URL: mysql+pymysql://digital_human:digital_human@mysql:3306/digital_human
       REDIS_URL: redis://redis:6379/0
       STORAGE_ROOT: /app/storage
+      TUILIONNX_BASE_URL: http://tuilionnx:8004
     volumes:
       - ./storage:/app/storage
     depends_on:
@@ -136,6 +138,16 @@ services:
       - ./storage:/app/storage
       - ${HEYGEM_REPO_PATH:-./external/HeyGem.ai}:/opt/heygem:ro
       - ${HEYGEM_DATA_PATH:-./external/duix_avatar_data}:/duix_avatar_data
+
+  tuilionnx:
+    build:
+      context: .
+      dockerfile: Services/tuilionnx-service/Dockerfile
+    profiles: ["tuilionnx", "models"]
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./storage:/app/storage
 
   distributor:
     image: python:3.12-slim

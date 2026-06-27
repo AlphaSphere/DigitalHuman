@@ -11,9 +11,133 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.models import RiskCheckModel, RiskFindingModel, TaskModel
-from app.domain.enums import ReviewedBy, RiskLevel, RiskStage, RiskStatus, RiskType, TaskStatus
+from app.adapters.llm import DeepSeekAdapter
+from app.core.exceptions import ApiError
+from app.db.models import ArtifactModel, RiskCheckModel, RiskFindingModel, TaskModel
+from app.domain.enums import ArtifactType, ReviewedBy, RiskLevel, RiskStage, RiskStatus, RiskType, TaskStatus
 from app.services.id_service import create_id
+from app.services.task_guards import assert_can_confirm_script_risk
+
+_VALID_RISK_TYPES = {item.value for item in RiskType}
+_VALID_RISK_STATUSES = {item.value for item in RiskStatus}
+
+
+def _format_finding_position(script_text: str, start: int, end: int, line: int, text: str) -> str:
+    """生成可解析且可读的位置描述。"""
+    snippet = text or script_text[start:end]
+    snippet = snippet.replace("\n", " ")[:24]
+    return f"char:{start}-{end}|line:{line}|第 {line} 行 ·「{snippet}」"
+
+
+def _format_meta_finding_position(scope: str, label: str) -> str:
+    """非正文命中项（如发布说明）的位置描述。"""
+    return f"meta:{scope}|{label}|发布环节要求（非正文词句）"
+
+
+def _resolve_text_span(script_text: str, text: str, start: int | None, end: int | None) -> tuple[int, int, int] | None:
+    """解析正文中的命中区间；无法定位则返回 None。"""
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+
+    if isinstance(start, int) and isinstance(end, int):
+        start = max(0, min(start, len(script_text)))
+        end = max(start, min(end, len(script_text)))
+        if end > start and script_text[start:end]:
+            line = script_text[:start].count("\n") + 1
+            return start, end, line
+
+    index = script_text.find(cleaned)
+    if index < 0:
+        return None
+    end_index = index + len(cleaned)
+    line = script_text[:index].count("\n") + 1
+    return index, end_index, line
+
+
+def build_script_findings_ai(task_id: str, script_text: str) -> tuple[list[dict], RiskStatus]:
+    """调用 DeepSeek 对文案做 AI 合规审查。"""
+    adapter = DeepSeekAdapter()
+    if not adapter.is_configured():
+        raise ApiError(
+            "DEEPSEEK_NOT_CONFIGURED",
+            "DeepSeek 未配置，无法运行 AI 合规检查。请在 .env 设置 DEEPSEEK_API_KEY 后重启。",
+            503,
+        )
+
+    try:
+        payload = adapter.check_script_compliance(script_text)
+    except RuntimeError as exc:
+        raise ApiError("DEEPSEEK_FAILED", str(exc), 502) from exc
+
+    findings: list[dict] = []
+    for index, item in enumerate(payload.get("findings") or []):
+        if not isinstance(item, dict):
+            continue
+        risk_type = str(item.get("type") or RiskType.platform_rule.value)
+        if risk_type not in _VALID_RISK_TYPES:
+            risk_type = RiskType.platform_rule.value
+
+        text = str(item.get("text") or item.get("quote") or "").strip()
+        suggestion = str(item.get("suggestion") or "请修改相关表述后重新检查。")
+        in_script = item.get("in_script")
+        if in_script is False:
+            in_script = False
+        elif text:
+            in_script = text in script_text
+        else:
+            in_script = False
+
+        if in_script and text:
+            span = _resolve_text_span(script_text, text, item.get("start"), item.get("end"))
+            if span:
+                start, end, line = span
+                findings.append(
+                    {
+                        "id": f"{create_id('finding')}_{index}",
+                        "type": risk_type,
+                        "target": "script",
+                        "text": script_text[start:end],
+                        "position": _format_finding_position(script_text, start, end, line, script_text[start:end]),
+                        "suggestion": suggestion,
+                    }
+                )
+                continue
+
+        scope = str(item.get("scope") or "publish")
+        label = str(item.get("position_label") or "发布说明")
+        findings.append(
+            {
+                "id": f"{create_id('finding')}_{index}",
+                "type": risk_type,
+                "target": scope,
+                "text": text or "发布合规提示",
+                "position": _format_meta_finding_position(scope, label),
+                "suggestion": suggestion,
+            }
+        )
+
+    status_raw = str(payload.get("overall_status") or "").strip()
+    if status_raw in _VALID_RISK_STATUSES:
+        risk_status = RiskStatus(status_raw)
+    else:
+        risk_status = derive_risk_status(findings)
+    return findings, risk_status
+
+
+def build_script_findings_for_check(task_id: str, script_text: str) -> tuple[list[dict], RiskStatus, ReviewedBy]:
+    """统一文案合规入口：有 DeepSeek 用 AI，否则回退关键词规则。"""
+    adapter = DeepSeekAdapter()
+    if adapter.is_configured():
+        findings, risk_status = build_script_findings_ai(task_id, script_text)
+        return findings, risk_status, ReviewedBy.deepseek
+    findings = build_script_findings(task_id, script_text)
+    return findings, derive_risk_status(findings), ReviewedBy.system
+
+
+def resolve_script_risk_check_mode() -> str:
+    """返回当前合规检查模式：ai 或 rules。"""
+    return "ai" if DeepSeekAdapter().is_configured() else "rules"
 
 
 def build_script_findings(task_id: str, script_text: str) -> list[dict]:
@@ -88,7 +212,14 @@ def derive_risk_status(findings: list[dict]) -> RiskStatus:
     return RiskStatus.passed
 
 
-def replace_risk_check(db: Session, task_id: str, stage: RiskStage, findings: list[dict]) -> RiskCheckModel:
+def replace_risk_check(
+    db: Session,
+    task_id: str,
+    stage: RiskStage,
+    findings: list[dict],
+    risk_status_override: RiskStatus | None = None,
+    reviewed_by: ReviewedBy = ReviewedBy.system,
+) -> RiskCheckModel:
     """为任务写入新一轮风险审核记录及关联发现项。
 
     用途：
@@ -107,7 +238,9 @@ def replace_risk_check(db: Session, task_id: str, stage: RiskStage, findings: li
         按 stage 选择 derive_risk_status 或 derive_pre_publish_status；
         计算 risk_level、risk_types，创建 RiskCheckModel 并批量插入 RiskFindingModel。
     """
-    risk_status = derive_risk_status(findings) if stage == RiskStage.script else derive_pre_publish_status(findings)
+    risk_status = risk_status_override or (
+        derive_risk_status(findings) if stage == RiskStage.script else derive_pre_publish_status(findings)
+    )
     risk_check = RiskCheckModel(
         id=create_id("risk"),
         task_id=task_id,
@@ -115,7 +248,7 @@ def replace_risk_check(db: Session, task_id: str, stage: RiskStage, findings: li
         risk_status=risk_status.value,
         risk_level=(RiskLevel.high if risk_status == RiskStatus.blocked else RiskLevel.medium if findings else RiskLevel.low).value,
         risk_types=sorted({finding["type"] for finding in findings}),
-        reviewed_by=ReviewedBy.system.value,
+        reviewed_by=reviewed_by.value,
         reviewed_at=None,
         created_at=datetime.utcnow(),
     )
@@ -248,6 +381,19 @@ def confirm_risk_check(db: Session, task_id: str, risk_check_id: str, confirmati
     task = db.get(TaskModel, task_id)
     if not task:
         raise ValueError("任务不存在")
+    if risk_check.stage == RiskStage.script.value:
+        assert_can_confirm_script_risk(task)
+    elif risk_check.stage == RiskStage.pre_publish.value:
+        if task.status != TaskStatus.completed.value:
+            raise ValueError("请先完成视频生成后再进行发布前检查")
+        final_video = db.scalar(
+            select(ArtifactModel).where(
+                ArtifactModel.task_id == task_id,
+                ArtifactModel.type == ArtifactType.final_video.value,
+            )
+        )
+        if not final_video:
+            raise ValueError("未找到成片产物，无法确认发布前合规")
     risk_check.risk_status = RiskStatus.passed.value
     risk_check.reviewed_by = ReviewedBy.user.value
     risk_check.reviewed_at = datetime.utcnow()

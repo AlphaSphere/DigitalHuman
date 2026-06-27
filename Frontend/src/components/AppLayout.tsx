@@ -24,9 +24,8 @@ export function AppLayout() {
           </span>
         </NavLink>
         <nav className="topnav" aria-label="主导航">
-          <NavLink to="/tasks/new">任务</NavLink>
-          <span>模板</span>
-          <span>分发</span>
+          <NavLink to="/tasks/new">创建任务</NavLink>
+          <NavLink to="/tasks">任务列表</NavLink>
         </nav>
       </header>
       <main>

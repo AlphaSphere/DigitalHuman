@@ -11,7 +11,11 @@ from app.core.config import get_settings
 
 
 settings = get_settings()
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+_engine_kwargs: dict = {"pool_pre_ping": True}
+if settings.database_url.startswith("sqlite"):
+    # FastAPI 多线程访问 SQLite 时需要关闭同线程校验
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+engine = create_engine(settings.database_url, **_engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 

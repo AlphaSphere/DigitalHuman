@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.exceptions import success_response
-from app.schemas.domain import UpdateSegmentsRequest
-from app.services.segment_service import confirm_script, list_segments, save_segments
+from app.schemas.domain import ConfirmScriptRequest, UpdateSegmentsRequest
+from app.services.segment_service import check_script_risk, confirm_script, list_segments, save_segments
 from app.services.serializers import task_to_dict
 
 router = APIRouter()
@@ -56,21 +56,14 @@ def update_segments(task_id: str, payload: UpdateSegmentsRequest, db: Session = 
     return success_response(save_segments(db, task_id, payload))
 
 
+@router.post("/tasks/{task_id}/check-script-risk")
+def run_script_risk_check(task_id: str, db: Session = Depends(get_db)) -> dict:
+    """保存当前文案并执行脚本阶段合规检查（不跳转页面）。"""
+    return success_response(check_script_risk(db, task_id))
+
+
 @router.post("/tasks/{task_id}/confirm-script")
-def confirm(task_id: str, db: Session = Depends(get_db)) -> dict:
-    """确认口播脚本并触发脚本阶段风险扫描。
-
-    用途：
-        文案定稿后进入 risk_service 脚本审核，更新任务状态。
-
-    参数：
-        task_id: 任务 ID。
-        db: 数据库会话。
-
-    返回：
-        更新后的任务 dict（含新 status）。
-
-    逻辑：
-        confirm_script 内 replace_risk_check(script)。
-    """
-    return success_response(task_to_dict(confirm_script(db, task_id)))
+def confirm(task_id: str, payload: ConfirmScriptRequest | None = None, db: Session = Depends(get_db)) -> dict:
+    """确认口播脚本：通过或带提示项时进入配置，仅 blocked 需改文案。"""
+    note = payload.confirmation_note if payload else None
+    return success_response(task_to_dict(confirm_script(db, task_id, note)))

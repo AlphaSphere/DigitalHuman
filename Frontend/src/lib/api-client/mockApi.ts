@@ -2,9 +2,14 @@
  * 用途：封装后端 REST API 调用，提供任务、文案、风险、产物与分发相关方法。
  */
 import type {
+  AiPublishMetadataResult,
   Artifact,
   AspectRatio,
+  AvatarEngine,
   AvatarProfile,
+  BackgroundMusicMode,
+  BatchDistributionInput,
+  GenerationQuality,
   GenerationVoiceMode,
   GenerationVideoMode,
   DistributionRecord,
@@ -13,6 +18,8 @@ import type {
   RiskCheck,
   RiskStage,
   ScriptGenerationMode,
+  ScriptRewriteInput,
+  ScriptRewriteResult,
   ScriptSegment,
   ScriptSource,
   SubtitleStyle,
@@ -55,6 +62,7 @@ interface SaveGenerationConfigInput {
   generation_voice_mode: GenerationVoiceMode
   custom_voice_file?: File | null
   custom_voice_file_name?: string
+  custom_voice_prompt_text?: string | null
   generation_video_mode: GenerationVideoMode
   custom_video_file?: File | null
   custom_video_file_name?: string
@@ -62,11 +70,18 @@ interface SaveGenerationConfigInput {
   aspect_ratio: AspectRatio
   subtitle_style: SubtitleStyle
   background_music_path?: string | null
+  background_music_mode?: BackgroundMusicMode
   background_music_volume?: number
+  voice_speed?: number
+  ai_watermark_enabled?: boolean
+  export_without_subtitle?: boolean
+  avatar_engine?: AvatarEngine
+  generation_quality?: GenerationQuality
+  tuilionnx_sync_offset?: number
 }
 
-/** API 根地址，可通过 VITE_API_BASE_URL 环境变量覆盖。 */
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
+/** API 根地址：开发环境默认走 Vite 同源代理 /api，避免跨域 Failed to fetch。 */
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
 
 /** 各 TaskStatus 对应的中文进度/状态说明。 */
 const statusMessages: Record<TaskStatus, string> = {
@@ -124,13 +139,39 @@ const progressOrder: TaskStatus[] = [
  * - response.ok 或 envelope.success 为 false 时抛出后端 error.message。
  */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: init?.body instanceof FormData ? init.headers : { 'Content-Type': 'application/json', ...init?.headers },
-  })
-  const envelope = (await response.json()) as ApiEnvelope<T>
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: init?.body instanceof FormData ? init.headers : { 'Content-Type': 'application/json', ...init?.headers },
+    })
+  } catch {
+    throw new Error('无法连接后端服务，请先运行 scripts/windows/一键启动数字人追爆.bat')
+  }
+
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw new Error(response.ok ? '后端响应格式异常' : `后端请求失败 (${response.status})`)
+  }
+
+  // FastAPI 路由级 404（旧后端未加载新接口时会出现）
+  if (
+    response.status === 404 &&
+    path.includes('check-script-risk') &&
+    typeof body === 'object' &&
+    body !== null &&
+    'detail' in body &&
+    !('success' in body)
+  ) {
+    throw new Error('合规检查接口未加载，请关闭并重新运行「一键启动数字人追爆.bat」后再试')
+  }
+
+  const envelope = body as ApiEnvelope<T>
+
   if (!response.ok || !envelope.success) {
-    throw new Error(envelope.error?.message ?? '请求失败')
+    throw new Error(envelope.error?.message ?? `请求失败 (${response.status})`)
   }
   return envelope.data as T
 }
@@ -168,7 +209,32 @@ export const getProgress = (task: Task): TaskProgress => {
 /**
  * 后端 API 客户端集合，供各页面 useQuery/useMutation 调用。
  */
+/** 后端运行环境与 ASR 依赖状态。 */
+export interface RuntimeInfo {
+  use_stub_model_adapters: boolean
+  enable_url_import: boolean
+  has_yt_dlp: boolean
+  has_ffmpeg: boolean
+  has_whisper_cli: boolean
+  whisper_base_url: string | null
+  enable_llm_rewrite: boolean
+  has_deepseek_api_key: boolean
+  deepseek_model: string
+  deepseek_base_url: string
+  risk_check_mode?: 'ai' | 'rules'
+  cosyvoice_ok?: boolean
+  cosyvoice_mode?: string | null
+  heygem_ok?: boolean
+  heygem_mode?: string | null
+  tuilionnx_ok?: boolean
+  tuilionnx_mode?: string | null
+}
+
 export const mockApi = {
+  async getRuntimeInfo(): Promise<RuntimeInfo> {
+    return request<RuntimeInfo>('/system/runtime-info')
+  },
+
   /**
    * 创建基于参考视频的任务（上传文件或提供 URL）。
    *
@@ -207,6 +273,10 @@ export const mockApi = {
    */
   async getTask(taskId: string): Promise<Task> {
     return request<Task>(`/tasks/${taskId}`)
+  },
+
+  async retranscribeVideo(taskId: string): Promise<Task> {
+    return request<Task>(`/tasks/${taskId}/retranscribe`, { method: 'POST' })
   },
 
   /**
@@ -256,8 +326,24 @@ export const mockApi = {
    * @param taskId - 任务 UUID
    * @returns 更新后的 Task
    */
-  async confirmScript(taskId: string): Promise<Task> {
-    return request<Task>(`/tasks/${taskId}/confirm-script`, { method: 'POST', body: JSON.stringify({}) })
+  async confirmScript(taskId: string, confirmation_note?: string): Promise<Task> {
+    return request<Task>(`/tasks/${taskId}/confirm-script`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmation_note: confirmation_note ?? null }),
+    })
+  },
+
+  /**
+   * 对当前已保存文案运行合规检查，结果留在文案页展示。
+   *
+   * @param taskId - 任务 UUID
+   * @returns 更新后的 task 与 riskCheck
+   */
+  async checkScriptRisk(taskId: string): Promise<{ task: Task; riskCheck: RiskCheck }> {
+    return request<{ task: Task; riskCheck: RiskCheck }>(`/tasks/${taskId}/check-script-risk`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
   },
 
   /**
@@ -296,17 +382,29 @@ export const mockApi = {
         avatar_profile_id: input.avatar_profile_id,
         generation_voice_mode: input.generation_voice_mode,
         custom_voice_file_name: input.custom_voice_file?.name ?? input.custom_voice_file_name,
+        custom_voice_prompt_text: input.custom_voice_prompt_text,
         generation_video_mode: input.generation_video_mode,
         custom_video_file_name: input.custom_video_file?.name ?? input.custom_video_file_name,
         authorization_confirmed: input.authorization_confirmed,
         aspect_ratio: input.aspect_ratio,
         subtitle_style: input.subtitle_style,
         background_music_path: input.background_music_path,
+        background_music_mode: input.background_music_mode ?? 'fixed',
         background_music_volume: input.background_music_volume,
+        voice_speed: input.voice_speed ?? 1,
+        ai_watermark_enabled: input.ai_watermark_enabled ?? false,
+        export_without_subtitle: input.export_without_subtitle ?? false,
+        avatar_engine: input.avatar_engine ?? 'heygem',
+        generation_quality: input.generation_quality ?? 'full',
+        tuilionnx_sync_offset: input.tuilionnx_sync_offset ?? 0,
       }),
     )
-    if (input.custom_voice_file) formData.append('custom_voice_file', input.custom_voice_file, input.custom_voice_file.name)
-    if (input.custom_video_file) formData.append('custom_video_file', input.custom_video_file, input.custom_video_file.name)
+    if (input.custom_voice_file && input.generation_voice_mode === 'uploaded_voice') {
+      formData.append('custom_voice_file', input.custom_voice_file, input.custom_voice_file.name)
+    }
+    if (input.custom_video_file && input.generation_video_mode === 'uploaded_video') {
+      formData.append('custom_video_file', input.custom_video_file, input.custom_video_file.name)
+    }
     return request<Task>(`/tasks/${taskId}/generation-config`, { method: 'POST', body: formData })
   },
 
@@ -377,6 +475,11 @@ export const mockApi = {
     return `${API_BASE_URL}/artifacts/${artifactId}/download`
   },
 
+  /** 参考视频预览地址（本地转存后由后端流式返回）。 */
+  getSourceVideoPreviewUrl(taskId: string): string {
+    return `${API_BASE_URL}/tasks/${taskId}/source-video`
+  },
+
   /**
    * 执行发布前合规检查（标题、简介、标签、AI 标识等）。
    *
@@ -398,6 +501,25 @@ export const mockApi = {
   },
 
   /**
+   * 上传用户自定义 BGM 文件到音乐库。
+   *
+   * @param file - 音频文件（mp3/wav/m4a 等）
+   * @returns 新增的 MusicTrack 元数据
+   */
+  async uploadMusicTrack(file: File): Promise<MusicTrack> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const resp = await fetch(`${API_BASE_URL}/music-tracks/upload`, { method: 'POST', body: formData })
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}))
+      throw new Error(body?.error?.message ?? `上传失败 (${resp.status})`)
+    }
+    const env = await resp.json() as ApiEnvelope<MusicTrack>
+    if (!env.success || !env.data) throw new Error(env.error?.message ?? '上传返回数据异常')
+    return env.data
+  },
+
+  /**
    * 获取任务的平台分发记录。
    *
    * @param taskId - 任务 UUID
@@ -416,7 +538,7 @@ export const mockApi = {
    */
   async createDistribution(
     taskId: string,
-    input: Pick<DistributionRecord, 'platform' | 'title' | 'description' | 'tags'>,
+    input: Pick<DistributionRecord, 'platform' | 'title' | 'description' | 'tags'> & { cover_artifact_id?: string },
   ): Promise<DistributionRecord> {
     return request<DistributionRecord>(`/tasks/${taskId}/distributions`, {
       method: 'POST',
@@ -435,5 +557,79 @@ export const mockApi = {
       method: 'POST',
       body: JSON.stringify({}),
     })
+  },
+
+  async rewriteScript(taskId: string, input: ScriptRewriteInput): Promise<ScriptRewriteResult> {
+    return request<ScriptRewriteResult>(`/tasks/${taskId}/rewrite-script`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
+
+  async generatePublishMetadata(
+    taskId: string,
+    input: { platform?: string; tone?: string } = {},
+  ): Promise<AiPublishMetadataResult> {
+    return request<AiPublishMetadataResult>(`/tasks/${taskId}/generate-publish-metadata`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
+
+  async generateCover(taskId: string, input: Record<string, unknown>) {
+    return request<{ artifact_id: string; path: string }>(`/tasks/${taskId}/covers/generate`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
+
+  async getCoverCandidates(taskId: string) {
+    return request<Array<{ path: string; timestamp?: number }>>(`/tasks/${taskId}/covers/candidates`)
+  },
+
+  async uploadCover(taskId: string, file: File) {
+    const formData = new FormData()
+    formData.append('file', file, file.name)
+    return request<{ artifact_id: string; path: string }>(`/tasks/${taskId}/covers/upload`, {
+      method: 'POST',
+      body: formData,
+    })
+  },
+
+  async startOneClickPipeline(input: { payload: Record<string, unknown>; file?: File | null; custom_voice_file?: File | null }) {
+    const formData = new FormData()
+    formData.append('payload', JSON.stringify(input.payload))
+    if (input.file) formData.append('file', input.file, input.file.name)
+    if (input.custom_voice_file) formData.append('custom_voice_file', input.custom_voice_file, input.custom_voice_file.name)
+    return request<Task>('/pipelines/one-click', { method: 'POST', body: formData })
+  },
+
+  async getPipelineStatus(taskId: string) {
+    return request<{
+      task_id: string
+      stage: string
+      message: string
+      percent: number
+      status: TaskStatus
+      stage_timings?: Record<string, { duration_ms?: number; finished_at?: string }>
+    }>(`/tasks/${taskId}/pipeline-status`)
+  },
+
+  async createBatchTasks(sourceUrls: string, aspectRatio: AspectRatio = '9:16') {
+    const formData = new FormData()
+    formData.append('source_urls', sourceUrls)
+    formData.append('aspect_ratio', aspectRatio)
+    return request<{ tasks: Task[]; count: number }>('/tasks/batch', { method: 'POST', body: formData })
+  },
+
+  async createBatchDistribution(taskId: string, input: BatchDistributionInput) {
+    return request<{ distribution_ids: string[]; count: number }>(`/tasks/${taskId}/distributions/batch`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  },
+
+  async getTasks(limit = 50): Promise<Task[]> {
+    return request<Task[]>(`/tasks?limit=${limit}`)
   },
 }

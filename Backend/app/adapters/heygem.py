@@ -56,20 +56,26 @@ class HeyGemAdapter:
         if self.settings.use_stub_model_adapters:
             return touch_file(task_id, "intermediate/avatar_video.mp4", b"stub avatar video")
         output_path = self.settings.storage_root / "tasks" / task_id / "intermediate" / "avatar_video.mp4"
-        with httpx.Client(timeout=self.settings.model_http_timeout_seconds) as client:
-            response = client.post(
-                f"{self.settings.heygem_base_url}/generate",
-                json={
-                    "task_id": task_id,
-                    "audio_path": audio_path,
-                    "avatar_profile_id": avatar_profile_id,
-                    "output_path": str(output_path),
-                },
-            )
+        # trust_env=False：禁用系统代理，防止代理拦截本地服务请求
+        with httpx.Client(timeout=self.settings.model_http_timeout_seconds, trust_env=False) as client:
             try:
+                response = client.post(
+                    f"{self.settings.heygem_base_url}/generate",
+                    json={
+                        "task_id": task_id,
+                        "audio_path": audio_path,
+                        "avatar_profile_id": avatar_profile_id,
+                        "output_path": str(output_path),
+                    },
+                )
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 raise RuntimeError(f"HeyGem 服务调用失败: {_response_detail(response)}") from exc
+            except httpx.RequestError as exc:
+                raise RuntimeError(
+                    f"HeyGem 服务不可达（{self.settings.heygem_base_url}）。"
+                    "请重启一键启动脚本以拉起 8003 端口服务，或在 .env 中配置 HEYGEM_VIDEO_BASE_URL 接入真实 HeyGem。"
+                ) from exc
             payload = response.json()
             video_path = payload.get("video_path") or payload.get("path") or payload.get("output_path")
             if not video_path:
@@ -91,6 +97,13 @@ def _response_detail(response: httpx.Response) -> str:
     """
     try:
         payload = response.json()
+        detail = payload.get("detail") or payload
+        text = str(detail).strip()
+        if text:
+            return text
     except ValueError:
-        return response.text
-    return str(payload.get("detail") or payload)
+        pass
+    text = (response.text or "").strip()
+    if text:
+        return text[:500]
+    return f"HTTP {response.status_code}，无响应正文"

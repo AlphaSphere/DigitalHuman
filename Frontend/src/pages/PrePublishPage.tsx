@@ -10,15 +10,11 @@ import { StatusBadge } from '../components/StatusBadge'
 import { getStatusMessage, mockApi } from '../lib/api-client/mockApi'
 import type { PrePublishCheckInput, RiskCheck } from '../types/domain'
 
-/** 支持的发布平台选项。 */
+/** 支持的发布平台选项（与后端 Playwright 能力对齐）。 */
 const platforms: Array<{ value: PrePublishCheckInput['platform']; label: string }> = [
   { value: 'douyin', label: '抖音' },
   { value: 'xiaohongshu', label: '小红书' },
-  { value: 'bilibili', label: 'B 站' },
   { value: 'wechat_channels', label: '视频号' },
-  { value: 'kuaishou', label: '快手' },
-  { value: 'tiktok', label: 'TikTok' },
-  { value: 'youtube', label: 'YouTube' },
 ]
 
 /**
@@ -41,6 +37,8 @@ export function PrePublishPage() {
   const [aiLabelConfirmed, setAiLabelConfirmed] = useState(false)
   const [confirmationNote, setConfirmationNote] = useState('我会在发布时补充 AI 生成标识。')
   const [activeRiskCheck, setActiveRiskCheck] = useState<RiskCheck | null>(null)
+  const [batchPlatforms, setBatchPlatforms] = useState<PrePublishCheckInput['platform'][]>(['douyin'])
+  const [coverArtifactId, setCoverArtifactId] = useState<string | undefined>()
   const [error, setError] = useState<string | null>(null)
 
   const taskQuery = useQuery({ queryKey: ['task', taskId], queryFn: () => mockApi.getTask(taskId) })
@@ -66,6 +64,7 @@ export function PrePublishPage() {
           .map((tag) => tag.trim())
           .filter(Boolean),
         ai_label_confirmed: aiLabelConfirmed,
+        cover_artifact_id: coverArtifactId,
       }),
     onSuccess: (riskCheck) => {
       setError(null)
@@ -100,6 +99,7 @@ export function PrePublishPage() {
           .split(',')
           .map((tag) => tag.trim())
           .filter(Boolean),
+        cover_artifact_id: coverArtifactId,
       }),
     onSuccess: () => {
       setError(null)
@@ -112,6 +112,48 @@ export function PrePublishPage() {
     mutationFn: (distributionId: string) => mockApi.retryDistribution(distributionId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['distributions', taskId] }),
     onError: (err) => setError(err instanceof Error ? err.message : '分发重试失败'),
+  })
+
+  const aiMetadataMutation = useMutation({
+    mutationFn: () => mockApi.generatePublishMetadata(taskId, { platform, tone: 'viral' }),
+    onSuccess: (result) => {
+      setTitle(result.title)
+      setDescription(result.description)
+      setTags(result.tags.join(','))
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : 'AI 生成失败'),
+  })
+
+  const batchDistributeMutation = useMutation({
+    mutationFn: () =>
+      mockApi.createBatchDistribution(taskId, {
+        platforms: batchPlatforms,
+        title,
+        description,
+        tags: tags
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        cover_artifact_id: coverArtifactId,
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['distributions', taskId] }),
+    onError: (err) => setError(err instanceof Error ? err.message : '批量发布失败'),
+  })
+
+  const coverMutation = useMutation({
+    mutationFn: () =>
+      mockApi.generateCover(taskId, {
+        use_ai_copy: true,
+        highlight_words: tags
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter(Boolean)
+          .slice(0, 3),
+        font_size: 72,
+        highlight_color: '#FFD600',
+      }),
+    onSuccess: (result) => setCoverArtifactId(result.artifact_id),
+    onError: (err) => setError(err instanceof Error ? err.message : '封面生成失败'),
   })
 
   if (taskQuery.isLoading || riskQuery.isLoading) {
@@ -171,6 +213,35 @@ export function PrePublishPage() {
             />
             我会在标题、简介或画面中添加 AI 生成标识。
           </label>
+          <div className="actions">
+            <button type="button" onClick={() => aiMetadataMutation.mutate()} disabled={aiMetadataMutation.isPending}>
+              DeepSeek 生成标题/话题
+            </button>
+            <button type="button" onClick={() => coverMutation.mutate()} disabled={coverMutation.isPending}>
+              生成封面
+            </button>
+            {coverArtifactId ? <span className="muted">封面 ID: {coverArtifactId}</span> : null}
+          </div>
+          <fieldset>
+            <legend>批量发布平台</legend>
+            {platforms.slice(0, 4).map((item) => (
+              <label key={item.value}>
+                <input
+                  type="checkbox"
+                  checked={batchPlatforms.includes(item.value)}
+                  onChange={() =>
+                    setBatchPlatforms((current) =>
+                      current.includes(item.value) ? current.filter((p) => p !== item.value) : [...current, item.value],
+                    )
+                  }
+                />
+                {item.label}
+              </label>
+            ))}
+            <button type="button" onClick={() => batchDistributeMutation.mutate()} disabled={!canPublish || batchPlatforms.length === 0}>
+              一键发布到所选平台
+            </button>
+          </fieldset>
         </main>
 
         <aside className="panel">

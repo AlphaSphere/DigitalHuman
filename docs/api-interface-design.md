@@ -280,7 +280,7 @@ MVP 可以先不启用账号系统。后续接入多用户时建议：
 | Router 文件 | 接口范围 | 主要依赖 Service |
 | --- | --- | --- |
 | `app/api/routers/tasks.py` | 创建任务、查询任务、启动生成、失败重试。 | `task_service.py`、`generation_service.py` |
-| `app/api/routers/segments.py` | 获取、保存、确认文案段落。 | `script_service.py` |
+| `app/api/routers/segments.py` | 获取、保存文案段落，运行脚本合规检查，确认文案。 | `segment_service.py` |
 | `app/api/routers/profiles.py` | 获取音色列表、数字人列表。 | `task_service.py` 或独立 `profile_service.py` |
 | `app/api/routers/artifacts.py` | 查询产物列表、下载产物。 | `artifact_service.py` |
 | `app/api/routers/risk_checks.py` | 查询风险结果、人工确认风险、发布前合规检查。 | `risk_service.py` |
@@ -299,6 +299,7 @@ MVP 可以先不启用账号系统。后续接入多用户时建议：
 | 接口 | 用途 |
 | --- | --- |
 | `GET /api/music-tracks` | 返回后端本地 CC0-1.0 Music 音乐目录中的可选曲目。 |
+| `POST /api/music-tracks/upload` | 上传用户自定义 BGM 文件（mp3/wav/m4a/aac/flac/ogg）到音乐库，返回新增曲目元数据。 |
 | `POST /api/tasks/{task_id}/distributions` | 调用 social-auto-upload 创建平台分发任务。 |
 | `GET /api/tasks/{task_id}/distributions` | 查询任务的分发记录和平台返回结果。 |
 | `POST /api/distributions/{distribution_id}/retry` | 对失败的分发记录重新投递。 |
@@ -308,15 +309,22 @@ MVP 可以先不启用账号系统。后续接入多用户时建议：
 | 服务 | 接口 | 请求核心字段 | 返回核心字段 |
 | --- | --- | --- | --- |
 | Whisper Service | `POST /transcribe` | `path`、`language`、`model` | `segments[]`，包含 `start_time`、`end_time`、`text`、`confidence` |
-| CosyVoice Service | `POST /synthesize` | `task_id`、`text`、`voice_profile_id`、`custom_voice_path`、`output_path` | `audio_path` |
+| CosyVoice Service | `POST /synthesize` | `task_id`、`text`、`voice_profile_id`、`custom_voice_path`、`custom_voice_prompt_text`、`output_path` | `audio_path` |
 | HeyGem Service | `POST /generate` | `task_id`、`audio_path`、`avatar_profile_id`、`output_path` | `video_path` |
+| TuiliONNX Service | `POST /generate` | 同 HeyGem + `compress_inference`、`sync_offset`、`inference_scale` | `video_path`、`synced_audio_path` |
 
 真实生成配置说明：
 
 - CosyVoice 官方 FastAPI 会返回原始 PCM 音频流，包装服务会转成标准 WAV 写入 `output_path`。
-- `custom_voice_path` 存在时，CosyVoice 包装服务优先使用零样本 / 跨语种推理；没有自定义音色时使用 `voice_profile_id` 或 `COSYVOICE_SFT_SPK_ID` 作为预设音色。
-- HeyGem 官方接口需要已有数字人视频素材，包装服务会优先把 `avatar_profile_id` 当作视频路径，其次读取 `HEYGEM_AVATAR_PROFILE_MAP`，最后使用 `HEYGEM_DEFAULT_VIDEO_PATH`。
+- `custom_voice_path` 存在时，若同时提供 `custom_voice_prompt_text`，CosyVoice 包装服务优先走 zero-shot；没有样本文本才退回 cross_lingual。没有自定义音色时使用 `voice_profile_id` 或 `COSYVOICE_SFT_SPK_ID` 作为预设音色。
+- 后端对上传音色按约 **60 字/段** 切分后再串行合成；预设音色 SFT 可至 **180 字/段**。包装服务会将音色样本统一转为 16kHz 单声道 WAV，并截取前 **5 秒** 使用。
+- `custom_voice_prompt_text` 可选；填写且与样本一致时优先 zero-shot，更快更稳；不填则退回 cross_lingual 克隆。
+- 保存配置时若选择「默认音色」，后端会忽略误传的 `custom_voice_file`，避免配置写成 `preset_voice` 却仍保留上传样本导致合成走默认音色。
+- HeyGem 官方接口（Duix.Avatar :8383）需要已有数字人视频素材，包装服务会优先把 `avatar_profile_id` 当作视频路径，其次读取 `HEYGEM_AVATAR_PROFILE_MAP`，最后使用 `HEYGEM_DEFAULT_VIDEO_PATH`。
 - HeyGem 合成完成后，包装服务会优先从查询结果中解析视频路径；如果官方接口没有返回明确路径，则从 `HEYGEM_RESULT_DIR` 中按任务 code 查找输出 MP4。
+- Duix.Avatar 运行在 Docker 容器中，无法直接读取宿主机 `C:\` 路径。通过 `HEYGEM_HOST_STORAGE_ROOT` / `HEYGEM_CONTAINER_STORAGE_ROOT` 配置路径映射，heygem-service 会在提交前自动翻译路径。容器启动时需 `-v <host_storage>:<container_storage>` 挂载 storage 目录。
+- TuiliONNX 引擎使用 Ultralight-Digital-Human 本地 ONNX 推理（8004 `local-onnx` 模式）；需配置 `TUILIONNX_REPO_PATH` 与 `TUILIONNX_DEFAULT_DATA_PATH`。
+- TuiliONNX 推理会额外输出 `avatar_synced_audio.wav`（与口型帧严格对齐的 16kHz 音频）；Worker 成片合成优先使用该文件，避免原始 TTS 与口型不同步。
 
 ## 6. 接口详情
 
@@ -326,7 +334,7 @@ MVP 可以先不启用账号系统。后续接入多用户时建议：
 POST /api/tasks/video
 ```
 
-用途：上传参考视频，创建 ASR 任务，后端保存原始视频并投递音频提取和 Whisper 识别任务。
+用途：上传参考视频或提交公开链接，创建 ASR 任务。**接口会立即返回**（`status=uploaded`），下载/转写由后台 `transcribe_video_task` 异步执行；前端应在文案页轮询任务状态直至 `transcribed` 或 `failed`。
 
 前端调用时机：任务创建页中，用户选择“上传视频”并提交后调用。
 
@@ -334,7 +342,8 @@ POST /api/tasks/video
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `file` | file | 是 | 参考视频文件，建议限制为 `mp4` / `mov`。 |
+| `file` | file | 二选一 | 参考视频文件，建议限制为 `mp4` / `mov`。 |
+| `source_url` | string | 二选一 | 公开可访问的视频链接（http/https），后端用 yt-dlp 下载。 |
 | `aspect_ratio` | string | 否 | 期望输出比例，例如 `9:16`。 |
 
 响应示例：
@@ -515,15 +524,37 @@ PUT /api/tasks/{task_id}/segments
 - `VALIDATION_ERROR`：段落为空、顺序重复、结束时间早于开始时间。
 - `409`：任务已进入生成阶段，不允许继续修改文案。
 
-### 6.5 确认最终文案
+### 6.5 文案合规检查（同页）
+
+```http
+POST /api/tasks/{task_id}/check-script-risk
+```
+
+用途：对当前已保存的文案段落调用 DeepSeek 执行 AI 合规扫描，返回 `task` 与 `riskCheck`（含字符位置，用于前端高亮标注）。
+
+前端调用时机：用户在文案页完成 DeepSeek 仿写后自动触发，或手动点击「运行 AI 合规检查」（需已配置 `DEEPSEEK_API_KEY`）。
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "data": {
+    "task": { "id": "task_01HZX...", "status": "content_review_required" },
+    "riskCheck": { "id": "risk_01...", "risk_status": "warning", "findings": [] }
+  }
+}
+```
+
+### 6.6 确认最终文案
 
 ```http
 POST /api/tasks/{task_id}/confirm-script
 ```
 
-用途：将当前文案保存为生成快照，并触发或生成文案风险检查结果。无风险时任务状态更新为 `script_confirmed`；需人工确认时更新为 `content_review_required`；高风险阻断时更新为 `content_rejected`。
+用途：合规检查通过且用户点击「继续配置生成」时，将任务状态更新为 `script_confirmed`（内部会再次校验文案风险）。若需人工确认的风险，应调用 `POST /api/tasks/{task_id}/risk-checks/{id}/confirm`。
 
-前端调用时机：用户确认文案无误并进入配置页前调用。
+前端调用时机：文案页合规检查通过后，用户确认进入配置页前调用。
 
 请求示例：
 
@@ -541,7 +572,7 @@ POST /api/tasks/{task_id}/confirm-script
   "data": {
     "task": {
       "id": "task_01HZX...",
-      "status": "content_review_required",
+      "status": "script_confirmed",
       "updated_at": "2026-06-01T06:40:00Z"
     }
   }
@@ -552,7 +583,7 @@ POST /api/tasks/{task_id}/confirm-script
 
 - `409`：任务尚未完成识别 / 解析，或没有可确认的文案段落。
 
-### 6.6 获取音色列表
+### 6.7 获取音色列表
 
 ```http
 GET /api/voice-profiles
@@ -627,10 +658,10 @@ POST /api/tasks/{task_id}/generation-config
 
 配置页支持两组二选一：
 
-- 音色：`uploaded_voice` 上传自己的音色样本，或 `preset_voice` 使用默认音色。
+- 音色：`uploaded_voice` 上传自己的音色样本并填写样本文本，优先走 zero-shot 克隆；或 `preset_voice` 使用默认音色。
 - 成片素材：`uploaded_video` 上传自己拍的视频，或 `preset_avatar` 使用默认数字人。
 
-当 `generation_voice_mode=uploaded_voice` 或 `generation_video_mode=uploaded_video` 时，必须传入对应文件信息，并要求 `authorization_confirmed=true`。
+当 `generation_voice_mode=uploaded_voice` 或 `generation_video_mode=uploaded_video` 时，必须传入对应文件信息，并要求 `authorization_confirmed=true`。上传音色还必须传入 `custom_voice_prompt_text`，内容需与音色样本音频一致。
 
 请求示例：
 
@@ -640,16 +671,22 @@ POST /api/tasks/{task_id}/generation-config
   "avatar_profile_id": "avatar_default",
   "generation_voice_mode": "uploaded_voice",
   "custom_voice_file_name": "voice_sample.wav",
+  "custom_voice_prompt_text": "大家好，我是 Jaden，今天分享一个项目进展。",
   "generation_video_mode": "uploaded_video",
   "custom_video_file_name": "self_video.mp4",
   "authorization_confirmed": true,
   "aspect_ratio": "9:16",
   "subtitle_style": {
     "enabled": true,
-    "font_size": 42,
+    "font_size": 20,
     "position": "bottom",
-    "color": "#FFFFFF"
-  }
+    "color": "#FFFFFF",
+    "stroke": true,
+    "font_family": "SimHei"
+  },
+  "generation_quality": "fast",
+  "tuilionnx_sync_offset": 0,
+  "avatar_engine": "heygem"
 }
 ```
 
@@ -677,6 +714,7 @@ POST /api/tasks/{task_id}/generation-config
 常见错误：
 
 - `VALIDATION_ERROR`：音色 ID、数字人 ID、字幕样式、自定义音色文件、自自拍视频文件或授权确认不合法。
+- 成片合成时 FFmpeg `subtitles` 滤镜会按 `aspect_ratio` 设置 `original_size`（如 1080x1920）与 `MarginV`，确保 `font_size=20`、`position=bottom` 在成片中真实贴底且字号准确。
 - `409`：任务尚未确认文案。
 
 ### 6.9 开始生成任务
@@ -768,6 +806,14 @@ POST /api/tasks/{task_id}/retry
 用途：任务失败后，从最近可恢复节点继续执行。
 
 前端调用时机：进度页或失败页中，用户点击“重试”后调用。
+
+**2026-06 行为约束：**
+
+- `error_code=TRANSCRIBE_FAILED` 时返回 409，应走 `POST /api/tasks/{task_id}/retranscribe`。
+- 仅 `failed`（非 `retrying`）可进入重试；重复提交返回 409。
+- 重试前复验 `_ensure_ready_for_generation`，并清理旧 `tts_audio/avatar_video/subtitle/final_video` 产物记录。
+- 生成中（`dubbing`…`composing`）禁止 `save_segments` / `check-script-risk` / `retranscribe`。
+- `POST /api/tasks/{task_id}/pre-publish-check` 要求 `status=completed` 且存在 `final_video` 产物。
 
 请求示例：
 
@@ -1071,3 +1117,25 @@ POST /api/tasks/{task_id}/pre-publish-check
 - API 层不要直接执行长耗时模型任务，只投递队列并更新状态。
 - 每个异步阶段至少记录 `task_id`、阶段、开始时间、结束时间、输入文件、输出文件和错误码。
 - 日志可以包含开发排查信息，但接口响应和用户可见日志不能暴露 token、内部命令细节或敏感路径。
+
+## 11. KrLongAI 对齐新增接口（2026-06-18）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/tasks/{id}/source-video` | 文案页参考视频预览（本地转存后） |
+| POST | `/api/tasks/{id}/retranscribe` | 重新下载/识别参考视频文案（仅 video_asr 任务） |
+| GET | `/api/system/runtime-info` | 运行模式、ASR/DeepSeek、合规模式（ai/rules）、模型包装服务 8002/8003/8004 健康 |
+| POST | `/api/pipelines/one-click` | 一键追爆款（异步，桌面模式 BackgroundTasks） |
+| GET | `/api/tasks/{id}/pipeline-status` | 一键流水线子进度 |
+| GET | `/api/tasks` | 任务列表 |
+| POST | `/api/tasks/batch` | 批量对标链接任务（Form: source_urls 换行分隔） |
+| POST | `/api/tasks/{id}/rewrite-script` | DeepSeek 文案仿写（Key 由服务端 `.env` 配置） |
+| POST | `/api/tasks/{id}/generate-publish-metadata` | AI 标题/描述/标签 |
+| GET | `/api/tasks/{id}/covers/candidates` | 封面候选帧 |
+| POST | `/api/tasks/{id}/covers/generate` | 生成封面 |
+| POST | `/api/tasks/{id}/covers/upload` | 上传封面 |
+| POST | `/api/tasks/{id}/distributions/batch` | 多平台批量发布 |
+| POST | `/api/pipelines/one-click` | 已下线（410），请走分步创作 |
+| GET | `/api/tasks/{id}/pipeline-status` | 已下线（410） |
+
+新增任务字段：`source_url`、`pipeline_mode`、`pipeline_stage`（含 `stage_timings`）、`voice_speed`、`background_music_mode`、`ai_watermark_enabled`、`export_without_subtitle`、`avatar_engine`、`generation_quality`、`tuilionnx_sync_offset`。

@@ -6,13 +6,15 @@
 
 import shlex
 import subprocess
+import sys
+import tempfile
 import wave
 from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,8 +32,12 @@ class Settings(BaseSettings):
     cosyvoice_prompt_text: str | None = None
     cosyvoice_target_sample_rate: int = 22050
     cosyvoice_workdir: Path | None = None
+    cosyvoice_repo_path: Path | None = None
     cosyvoice_timeout_seconds: float = 600
-    allow_stub_output: bool = False
+    allow_stub_output: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("ALLOW_STUB_OUTPUT", "ALLOW_MODEL_SERVICE_STUB_OUTPUT"),
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -41,6 +47,7 @@ class Settings(BaseSettings):
         "cosyvoice_model_dir",
         "cosyvoice_prompt_text",
         "cosyvoice_workdir",
+        "cosyvoice_repo_path",
         mode="before",
     )
     @classmethod
@@ -71,6 +78,7 @@ class SynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1)
     voice_profile_id: str | None = None
     custom_voice_path: str | None = None
+    custom_voice_prompt_text: str | None = None
     output_path: str = Field(..., min_length=1)
 
 
@@ -83,9 +91,30 @@ class SynthesizeResponse(BaseModel):
     audio_path: str
 
 
+VOICE_PROFILE_SPK_MAP = {
+    "voice_default_female": "中文女",
+    "voice_default_male": "中文男",
+}
+
+
+def _resolve_spk_id(voice_profile_id: str | None) -> str:
+    """将业务音色 ID 映射为 CosyVoice 官方 SFT 说话人 ID。"""
+    if not voice_profile_id:
+        return settings.cosyvoice_sft_spk_id
+    return VOICE_PROFILE_SPK_MAP.get(voice_profile_id, voice_profile_id)
+
+
+def _write_stub_wav(path: Path, sample_rate: int = 22050, duration_seconds: float = 2.0) -> None:
+    """写入短静音 WAV，供本地无 GPU 时跑通 FFmpeg / HeyGem 链路。"""
+    frame_count = int(sample_rate * duration_seconds)
+    _write_pcm_wav(path, b"\x00\x00" * frame_count, sample_rate)
+
+
 settings = Settings()
 app = FastAPI(title="DigitalHuman CosyVoice Service")
 _local_model: Any | None = None
+# 克隆音色样本转 16k WAV 结果缓存，避免每段分段合成都跑 ffmpeg
+_prompt_wav_cache: dict[str, tuple[Path, bool]] = {}
 
 
 @app.get("/health")
@@ -104,7 +133,7 @@ def health() -> dict:
     if not settings.cosyvoice_upstream_url and not settings.cosyvoice_model_dir:
         mode = "command"
     if not settings.cosyvoice_upstream_url and not settings.cosyvoice_model_dir and not settings.cosyvoice_command_template:
-        mode = "unconfigured"
+        mode = "stub" if settings.allow_stub_output else "unconfigured"
     return {"status": "ok", "service": "cosyvoice", "mode": mode}
 
 
@@ -135,8 +164,8 @@ def synthesize(payload: SynthesizeRequest) -> SynthesizeResponse:
     if settings.cosyvoice_command_template:
         return _synthesize_command(payload, output_path)
     if settings.allow_stub_output:
-        # 仅供本地联调协议使用；真实生成时必须关闭并配置 CosyVoice 仓库命令或上游服务。
-        output_path.write_bytes(b"stub cosyvoice audio")
+        # 本地无 CosyVoice 上游时写入标准静音 WAV，便于后续 FFmpeg/HeyGem 继续处理。
+        _write_stub_wav(output_path, settings.cosyvoice_target_sample_rate)
         return SynthesizeResponse(audio_path=str(output_path))
     raise HTTPException(status_code=503, detail="CosyVoice 服务未配置：请设置 COSYVOICE_COMMAND_TEMPLATE 或 COSYVOICE_UPSTREAM_URL")
 
@@ -159,7 +188,7 @@ def _synthesize_upstream(payload: SynthesizeRequest) -> SynthesizeResponse:
     if settings.cosyvoice_upstream_mode == "official_fastapi":
         return _synthesize_official_fastapi(payload)
     try:
-        with httpx.Client(timeout=settings.cosyvoice_timeout_seconds) as client:
+        with httpx.Client(timeout=settings.cosyvoice_timeout_seconds, trust_env=False) as client:
             response = client.post(f"{settings.cosyvoice_upstream_url.rstrip('/')}/synthesize", json=payload.model_dump())
             response.raise_for_status()
             data = response.json()
@@ -189,28 +218,113 @@ def _synthesize_official_fastapi(payload: SynthesizeRequest) -> SynthesizeRespon
         4. 调用 _write_pcm_wav 落盘。
     """
     output_path = Path(payload.output_path)
-    endpoint, data, files = _official_fastapi_payload(payload)
+    endpoint, data, files, temp_paths = _official_fastapi_payload(payload)
+    pcm_bytes = b""
     try:
-        with httpx.Client(timeout=settings.cosyvoice_timeout_seconds) as client:
-            response = client.post(
-                f"{settings.cosyvoice_upstream_url.rstrip('/')}/{endpoint}",
-                data=data,
-                files=files,
-            )
-            response.raise_for_status()
-    except Exception as exc:
+        # trust_env=False：禁用系统 HTTP 代理，避免代理拦截本地服务请求返回 403
+        # 使用 stream() 模式逐块读取 PCM 音频流，避免 CosyVoice 官方 FastAPI 的
+        # StreamingResponse 在 chunked transfer 末尾提前关闭连接时 httpx 报错。
+        with httpx.Client(timeout=settings.cosyvoice_timeout_seconds, trust_env=False) as client:
+            url = f"{settings.cosyvoice_upstream_url.rstrip('/')}/{endpoint}"
+            if files:
+                req_kwargs = {"data": data, "files": files}
+            else:
+                req_kwargs = {"data": data}
+
+            with client.stream("POST", url, **req_kwargs) as response:
+                if response.status_code >= 400:
+                    response.read()  # 读取错误详情
+                    raise httpx.HTTPStatusError(
+                        message=f"Server error '{response.status_code}'",
+                        request=response.request,
+                        response=response,
+                    )
+                for chunk in response.iter_bytes():
+                    pcm_bytes += chunk
+    except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=502, detail=f"CosyVoice 官方 FastAPI 调用失败: {exc}") from exc
+    except Exception as exc:
+        if pcm_bytes:
+            # 连接提前关闭但已接收到部分数据，仍可继续写入 WAV
+            pass
+        else:
+            raise HTTPException(status_code=502, detail=f"CosyVoice 官方 FastAPI 调用失败: {exc}") from exc
     finally:
         for file_tuple in files.values():
             file_tuple[1].close()
+        # 清理 ffmpeg 转码产生的临时 WAV 文件
+        for tmp_path in temp_paths:
+            tmp_path.unlink(missing_ok=True)
 
     # 官方 FastAPI 返回的是 16-bit PCM 流，这里转成标准 WAV，方便后续 FFmpeg/HeyGem 读取。
-    _write_pcm_wav(output_path, response.content, settings.cosyvoice_target_sample_rate)
+    _write_pcm_wav(output_path, pcm_bytes, settings.cosyvoice_target_sample_rate)
     return SynthesizeResponse(audio_path=str(output_path))
 
 
-def _official_fastapi_payload(payload: SynthesizeRequest):
-    """构造官方 FastAPI 请求的 endpoint、表单字段与文件附件。
+def _convert_to_wav_16k(src: Path) -> tuple[Path, bool]:
+    """将音频文件转换为 CosyVoice 所需的 16kHz 单声道 WAV 格式。
+
+    用途：CosyVoice 官方 FastAPI 使用 soundfile 加载音色样本，soundfile 不支持 MP3/AAC
+    等有损格式，且要求 16kHz 单声道。通过 ffmpeg 统一转换，避免上游 500 错误。
+
+    参数:
+        src: 原始音频文件路径。
+
+    返回:
+        (wav_path, is_temp) 元组：
+          - wav_path: 可用的 16kHz WAV 路径（若已符合则为原路径）；
+          - is_temp: True 表示 wav_path 是临时文件，调用方需在用完后删除。
+
+    逻辑:
+        1. 已是 WAV 则先探测采样率，符合则直接返回原路径；
+        2. 否则用 ffmpeg 转为 16kHz 单声道 WAV 临时文件。
+    """
+    suffix = src.suffix.lower()
+
+    # 尝试探测现有 WAV 是否已是 16kHz 单声道且不超过 5 秒（可直接使用）
+    if suffix == ".wav":
+        try:
+            with wave.open(str(src), "rb") as wf:
+                duration = wf.getnframes() / wf.getframerate()
+                if wf.getframerate() == 16000 and wf.getnchannels() == 1 and duration <= 5.0:
+                    return src, False
+        except Exception:
+            pass  # 损坏或非标准 WAV，交给 ffmpeg 重新转换
+
+    # 用 ffmpeg 转为 16kHz 单声道 WAV 临时文件
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_path = Path(tmp.name)
+    tmp.close()
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(src),
+        "-t", "5",        # 截取前 5 秒，降低 zero-shot/cross_lingual 前处理负担
+        "-ar", "16000",   # 采样率 16kHz
+        "-ac", "1",       # 单声道
+        "-sample_fmt", "s16",
+        str(tmp_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=400,
+                detail=f"音色样本转码失败（需安装 ffmpeg）: {result.stderr[-300:]}",
+            )
+    except FileNotFoundError:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="ffmpeg 未安装，无法转换音色样本格式")
+    except subprocess.TimeoutExpired:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="音色样本转码超时")
+
+    return tmp_path, True
+
+
+def _official_fastapi_payload(payload: SynthesizeRequest) -> tuple:
+    """构造官方 FastAPI 请求的 endpoint、表单字段、文件附件与临时文件列表。
 
     用途：根据是否提供 custom_voice_path 与 prompt_text 选择推理模式。
 
@@ -218,21 +332,35 @@ def _official_fastapi_payload(payload: SynthesizeRequest):
         payload: 合成请求体。
 
     返回:
-        (endpoint 路径, form data 字典, files 字典) 三元组。
+        (endpoint 路径, form data 字典, files 字典, temp_paths 列表) 四元组。
+        temp_paths 为需要在请求结束后删除的临时文件路径列表。
 
     逻辑:
-        有自定义音色样本时优先 zero_shot（需 prompt_text）或 cross_lingual；
-        否则走 SFT 预设说话人 inference_sft。
+        有自定义音色样本时先转为 16kHz WAV，再优先 zero_shot（需 prompt_text）
+        或 cross_lingual；否则走 SFT 预设说话人 inference_sft。
     """
     if payload.custom_voice_path:
-        prompt_wav = Path(payload.custom_voice_path)
-        if not prompt_wav.exists():
+        src_path = Path(payload.custom_voice_path)
+        if not src_path.exists():
             raise HTTPException(status_code=400, detail=f"自定义音色样本不存在: {payload.custom_voice_path}")
-        files = {"prompt_wav": ("prompt_wav", prompt_wav.open("rb"), "application/octet-stream")}
-        if settings.cosyvoice_prompt_text:
-            return "inference_zero_shot", {"tts_text": payload.text, "prompt_text": settings.cosyvoice_prompt_text}, files
-        return "inference_cross_lingual", {"tts_text": payload.text}, files
-    return "inference_sft", {"tts_text": payload.text, "spk_id": payload.voice_profile_id or settings.cosyvoice_sft_spk_id}, {}
+
+        # 确保上传给 CosyVoice 的是 16kHz WAV，soundfile 才能正确解析（同文件复用缓存）
+        cache_key = f"{src_path.resolve()}:{src_path.stat().st_mtime_ns}"
+        cached = _prompt_wav_cache.get(cache_key)
+        if cached:
+            wav_path, is_temp = cached
+            temp_paths = []
+        else:
+            wav_path, is_temp = _convert_to_wav_16k(src_path)
+            _prompt_wav_cache[cache_key] = (wav_path, is_temp)
+            temp_paths = []  # 缓存供多段配音复用，不在 finally 删除
+
+        files = {"prompt_wav": ("prompt_wav.wav", wav_path.open("rb"), "audio/wav")}
+        prompt_text = (payload.custom_voice_prompt_text or settings.cosyvoice_prompt_text or "").strip()
+        if prompt_text:
+            return "inference_zero_shot", {"tts_text": payload.text, "prompt_text": prompt_text}, files, temp_paths
+        return "inference_cross_lingual", {"tts_text": payload.text}, files, temp_paths
+    return "inference_sft", {"tts_text": payload.text, "spk_id": _resolve_spk_id(payload.voice_profile_id)}, {}, []
 
 
 def _synthesize_local_model(payload: SynthesizeRequest, output_path: Path) -> SynthesizeResponse:
@@ -257,18 +385,33 @@ def _synthesize_local_model(payload: SynthesizeRequest, output_path: Path) -> Sy
             prompt_wav = Path(payload.custom_voice_path)
             if not prompt_wav.exists():
                 raise HTTPException(status_code=400, detail=f"自定义音色样本不存在: {payload.custom_voice_path}")
-            if settings.cosyvoice_prompt_text:
-                model_output = model.inference_zero_shot(payload.text, settings.cosyvoice_prompt_text, str(prompt_wav))
+            prompt_text = (payload.custom_voice_prompt_text or settings.cosyvoice_prompt_text or "").strip()
+            if prompt_text:
+                model_output = model.inference_zero_shot(payload.text, prompt_text, str(prompt_wav))
             else:
                 model_output = model.inference_cross_lingual(payload.text, str(prompt_wav))
         else:
-            model_output = model.inference_sft(payload.text, payload.voice_profile_id or settings.cosyvoice_sft_spk_id)
+            model_output = model.inference_sft(payload.text, _resolve_spk_id(payload.voice_profile_id))
         _save_model_output(model_output, output_path, model.sample_rate)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"CosyVoice 本地模型推理失败: {exc}") from exc
     return SynthesizeResponse(audio_path=str(output_path))
+
+
+def _ensure_cosyvoice_repo_on_path() -> None:
+    """将 CosyVoice 源码目录加入 sys.path，便于本地 AutoModel 加载。"""
+    repo_path = settings.cosyvoice_repo_path
+    if not repo_path:
+        return
+    repo = Path(repo_path).resolve()
+    if not repo.exists():
+        return
+    for candidate in (repo, repo / "third_party" / "Matcha-TTS"):
+        candidate_str = str(candidate)
+        if candidate.exists() and candidate_str not in sys.path:
+            sys.path.insert(0, candidate_str)
 
 
 def _load_local_model():
@@ -285,6 +428,7 @@ def _load_local_model():
     global _local_model
     if _local_model is not None:
         return _local_model
+    _ensure_cosyvoice_repo_on_path()
     try:
         from cosyvoice.cli.cosyvoice import AutoModel
     except ImportError as exc:
@@ -347,6 +491,7 @@ def _synthesize_command(payload: SynthesizeRequest, output_path: Path) -> Synthe
         "output_path": str(output_path),
         "voice_profile_id": payload.voice_profile_id or "",
         "custom_voice_path": payload.custom_voice_path or "",
+        "custom_voice_prompt_text": payload.custom_voice_prompt_text or "",
     }
     command = settings.cosyvoice_command_template.format(**values)
     try:

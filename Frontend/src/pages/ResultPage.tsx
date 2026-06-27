@@ -2,60 +2,95 @@
  * 用途：成片结果页，展示最终视频预览、产物下载与任务摘要，入口至发布前检查。
  */
 import { useQuery } from '@tanstack/react-query'
-import { Link, useParams } from 'react-router-dom'
+import { useEffect } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { StatusBadge } from '../components/StatusBadge'
 import { StepNav } from '../components/StepNav'
+import { resolveTaskQueryFallback } from '../components/TaskQueryFallback'
 import { getStatusMessage, mockApi } from '../lib/api-client/mockApi'
+import { buildTaskStepUrl } from '../lib/taskFlow'
 
-/**
- * 将字节数格式化为 MB 字符串。
- *
- * @param size - 文件大小（字节），可选
- * @returns 保留一位小数的 MB 文案，缺省时返回「未知大小」
- */
 function formatSize(size?: number) {
   if (!size) return '未知大小'
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-/**
- * 生成完成后的结果展示页面。
- *
- * @returns 视频预览区、产物列表与任务元信息
- *
- * 逻辑：
- * - 并行加载 task 与 artifacts；
- * - 下载按钮通过 getArtifactDownloadUrl 新窗口打开。
- */
+const RESULT_READY_STATUSES = new Set(['completed', 'publish_ready', 'publish_blocked', 'publish_checking'])
+
 export function ResultPage() {
   const { taskId = '' } = useParams()
+  const navigate = useNavigate()
   const taskQuery = useQuery({ queryKey: ['task', taskId], queryFn: () => mockApi.getTask(taskId) })
-  const artifactQuery = useQuery({ queryKey: ['artifacts', taskId], queryFn: () => mockApi.getArtifacts(taskId) })
+  const runtimeQuery = useQuery({ queryKey: ['runtime-info'], queryFn: () => mockApi.getRuntimeInfo(), staleTime: 60_000 })
+  const artifactQuery = useQuery({
+    queryKey: ['artifacts', taskId],
+    queryFn: () => mockApi.getArtifacts(taskId),
+    enabled: !!taskId,
+  })
 
-  if (taskQuery.isLoading || artifactQuery.isLoading) {
-    return <div className="page">正在加载成片结果...</div>
+  const task = taskQuery.data
+  const finalVideo = artifactQuery.data?.find((item) => item.type === 'final_video')
+
+  useEffect(() => {
+    if (!task) return
+    if (!RESULT_READY_STATUSES.has(task.status)) {
+      navigate(buildTaskStepUrl(task.id, task.status, task.error_code), { replace: true })
+    }
+  }, [navigate, task])
+
+  const taskFallback = resolveTaskQueryFallback({
+    query: taskQuery,
+    loadingMessage: '正在加载成片结果...',
+  })
+  if (taskFallback) return taskFallback
+
+  if (artifactQuery.isLoading) {
+    return <div className="page">正在加载成片产物...</div>
   }
 
-  if (!taskQuery.data) return <div className="page">任务不存在。</div>
+  if (!task || !RESULT_READY_STATUSES.has(task.status)) {
+    return <div className="page">成片尚未就绪，正在跳转...</div>
+  }
+
+  const runtime = runtimeQuery.data
+  const isDemoOutput =
+    runtime?.use_stub_model_adapters ||
+    runtime?.cosyvoice_mode === 'stub' ||
+    runtime?.heygem_mode === 'stub' ||
+    runtime?.tuilionnx_mode === 'stub'
 
   return (
     <section className="page">
-      <StepNav current={5} />
+      <StepNav current={4} />
       <div className="page-heading row-heading">
         <div>
           <p className="eyebrow">成片结果</p>
           <h1>成片已生成，可以预览和下载</h1>
-          <p>当前为 mock 产物，发布前建议先完成标题、简介、标签和 AI 标识检查。</p>
+          <p>
+            {isDemoOutput
+              ? '当前为占位配音/数字人 + FFmpeg 合成的演示成片；接入真实模型后可获得 AI 口播效果。'
+              : '发布前建议先完成标题、简介、标签和 AI 标识检查。'}
+          </p>
         </div>
-        <StatusBadge status={taskQuery.data.status} label={getStatusMessage(taskQuery.data.status)} />
+        <StatusBadge status={task.status} label={getStatusMessage(task.status)} />
       </div>
 
       <div className="two-column result-grid">
         <main className="panel">
-          <div className="final-video">
-            <span>最终视频预览</span>
-            <strong>{taskQuery.data.aspect_ratio}</strong>
-          </div>
+          {finalVideo ? (
+            <video
+              className="final-video-player"
+              controls
+              preload="metadata"
+              src={mockApi.getArtifactDownloadUrl(finalVideo.id)}
+            />
+          ) : (
+            <div className="final-video">
+              <span>最终视频预览</span>
+              <strong>{task.aspect_ratio}</strong>
+              <p className="muted">未找到成片文件，请返回进度页重试生成。</p>
+            </div>
+          )}
         </main>
 
         <aside className="panel">
@@ -65,7 +100,9 @@ export function ResultPage() {
               <article key={artifact.id} className="artifact-card">
                 <div>
                   <strong>{artifact.meta.label ?? artifact.type}</strong>
-                  <span>{artifact.meta.format?.toUpperCase()} · {formatSize(artifact.meta.size_bytes)}</span>
+                  <span>
+                    {artifact.meta.format?.toUpperCase()} · {formatSize(artifact.meta.size_bytes)}
+                  </span>
                 </div>
                 <button
                   type="button"
@@ -81,15 +118,15 @@ export function ResultPage() {
           <dl className="meta-list">
             <div>
               <dt>文案来源</dt>
-              <dd>{taskQuery.data.script_source}</dd>
+              <dd>{task.script_source}</dd>
             </div>
             <div>
               <dt>音色</dt>
-              <dd>{taskQuery.data.voice_profile_id}</dd>
+              <dd>{task.voice_profile_id}</dd>
             </div>
             <div>
               <dt>数字人</dt>
-              <dd>{taskQuery.data.avatar_profile_id}</dd>
+              <dd>{task.avatar_profile_id}</dd>
             </div>
             <div>
               <dt>合规提示</dt>
