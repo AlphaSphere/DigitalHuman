@@ -147,7 +147,7 @@ export function ScriptPage() {
   const scriptHighlights = useMemo(() => {
     if (!canUseCompliance || riskStale || !displayRiskCheck?.findings.length) return []
     return buildHighlightSpans(fullScriptDraft, displayRiskCheck.findings)
-  }, [fullScriptDraft, displayRiskCheck?.findings, canUseCompliance, riskStale])
+  }, [fullScriptDraft, displayRiskCheck, canUseCompliance, riskStale])
 
   const handleJumpToFinding = (finding: RiskFinding) => {
     const span = getFindingSpan(finding, fullScriptDraft)
@@ -179,6 +179,9 @@ export function ScriptPage() {
   }, [pendingJumpFindingId, scriptMode, fullScriptDraft, displayRiskCheck?.findings])
 
   useEffect(() => {
+    // 任务状态从服务端变为 transcribed / 重新识别失败时，清空本地草稿并让 segments 重新拉取，
+    // 属于「外部状态变化后重置本地编辑缓冲区」，不是内部状态间的级联同步。
+    /* eslint-disable react-hooks/set-state-in-effect */
     const status = taskQuery.data?.status
     const errorCode = taskQuery.data?.error_code
     if (status === 'transcribed') {
@@ -192,6 +195,7 @@ export function ScriptPage() {
       setFullScriptDraftOverride(null)
       queryClient.invalidateQueries({ queryKey: ['segments', taskId] })
     }
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [taskQuery.data?.status, taskQuery.data?.error_code, taskId, queryClient])
 
   const saveMutation = useMutation({

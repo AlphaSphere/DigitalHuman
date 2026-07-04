@@ -4,8 +4,9 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.core.config import get_settings
@@ -62,6 +63,21 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    @app.middleware("http")
+    async def enforce_api_key(request: Request, call_next):
+        """
+        用途：为 `/api` 前缀下的所有接口提供可选的共享密钥校验。
+
+        逻辑：
+            1. `api_auth_token` 未配置（默认空字符串）时完全放行，保持现有本地/桌面单机使用体验不变
+            2. 配置后，非 `/api` 前缀的请求（如 `/health`、文档）不受影响
+            3. `/api` 请求必须携带匹配的 `X-API-Key` header，否则返回 401
+        """
+        if settings.api_auth_token and request.url.path.startswith(settings.api_prefix):
+            if request.headers.get("X-API-Key") != settings.api_auth_token:
+                return JSONResponse(status_code=401, content={"error": {"code": "UNAUTHORIZED", "message": "缺少或错误的 X-API-Key"}})
+        return await call_next(request)
+
     app.include_router(api_router, prefix=settings.api_prefix)
 
     @app.get("/health")

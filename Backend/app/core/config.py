@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     # 本地桌面模式：SQLite + Celery 同步执行，无需 Docker / Redis / 独立 Worker
     local_desktop_mode: bool = False
+    # 为空时保持现状（接口不鉴权，适合纯本地单机使用）；部署到局域网/公网前应设置为一个随机字符串，
+    # 请求需带 `X-API-Key` header 匹配该值，否则 /api/* 返回 401。
+    api_auth_token: str = ""
 
     database_url: str = "mysql+pymysql://digital_human:digital_human@mysql:3306/digital_human"
     redis_url: str = "redis://redis:6379/0"

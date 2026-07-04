@@ -110,6 +110,9 @@ export function ConfigPage() {
   }, [location.state, navigate, task, taskId, taskQuery.isFetching, taskQuery.isLoading])
 
   useEffect(() => {
+    // 仅在任务首次加载时把服务端数据灌入本地可编辑表单状态，hydratedRef 保证只跑一次，
+    // 之后的用户编辑不会被覆盖；这里不是「同步状态」意义上的级联更新。
+    /* eslint-disable react-hooks/set-state-in-effect */
     if (!task || hydratedRef.current) return
     hydratedRef.current = true
     if (task.voice_profile_id) setVoiceId(task.voice_profile_id)
@@ -155,6 +158,7 @@ export function ConfigPage() {
     if (task.avatar_engine) setAvatarEngine(task.avatar_engine)
     if (task.generation_quality) setGenerationQuality(task.generation_quality)
     if (typeof task.tuilionnx_sync_offset === 'number') setTuilionnxSyncOffset(task.tuilionnx_sync_offset)
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [task])
 
   const saveConfigMutation = useMutation({
@@ -206,7 +210,6 @@ export function ConfigPage() {
   const selectedAvatar = avatarQuery.data?.find((avatar) => avatar.id === avatarId)
   const needsMaterialAuthorization = generationVoiceMode === 'uploaded_voice' || generationVideoMode === 'uploaded_video'
   const needsCustomVoice = generationVoiceMode === 'uploaded_voice' && !customVoiceFile && !task?.custom_voice_path
-  const needsCustomVoicePrompt = false
   const recommendsCustomVoicePrompt = generationVoiceMode === 'uploaded_voice' && !customVoicePromptText.trim()
   const needsCustomVideo = generationVideoMode === 'uploaded_video' && !customVideoFile && !task?.custom_video_path
   const needsAuthorizationConfirmation = needsMaterialAuthorization && !authorizationConfirmed

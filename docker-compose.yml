@@ -44,6 +44,8 @@ services:
       TUILIONNX_BASE_URL: http://tuilionnx:8004
     volumes:
       - ./storage:/app/storage
+      # 需要真实分发时取消注释，并执行 scripts/setup-sau-cli.sh 安装 sau CLI：
+      # - ../social-auto-upload:/opt/social-auto-upload:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -58,7 +60,7 @@ services:
       MYSQL_PASSWORD: digital_human
       MYSQL_ROOT_PASSWORD: digital_human_root
     ports:
-      - "3306:3306"
+      - "33061:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
@@ -70,7 +72,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "63791:6379"
 
   whisper:
     build:
@@ -152,7 +154,7 @@ services:
   distributor:
     image: python:3.12-slim
     profiles: ["distribution"]
-    command: ["sh", "-lc", "echo '请在这里安装并配置 dreammis/social-auto-upload sau CLI' && sleep infinity"]
+    command: ["sh", "-lc", "echo '请运行 scripts/setup-sau-cli.sh 安装并配置 social-auto-upload sau CLI' && sleep infinity"]
     volumes:
       - ./storage:/app/storage
 

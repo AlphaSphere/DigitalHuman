@@ -1,0 +1,201 @@
+{
+  "generated_at": "2026-07-04",
+  "scope": "DigitalHuman/Backend, DigitalHuman/Frontend, DigitalHuman/Services, docker-compose.yml — 基于 docs/codebase-current-state.md 识别的架构，逐一核实代码后得出",
+  "schema_note": "用户消息中格式模板缺失（截断），以下为按扫描目的自定义的字段：id/category/severity/title/description/location/evidence/status",
+  "items": [
+    {
+      "id": 1,
+      "category": "build_failure",
+      "severity": "critical",
+      "title": "Frontend 生产构建失败：ConfigPage.tsx 未使用变量导致 tsc 报错",
+      "description": "`npm run build` 执行 `tsc -b && vite build`，TS6133 报错会使 build 命令以非零退出码终止，CI/生产构建会失败。",
+      "location": "Frontend/src/pages/ConfigPage.tsx:209",
+      "evidence": "npx tsc -b --noEmit → error TS6133: 'needsCustomVoicePrompt' is declared but its value is never read.",
+      "status": "fixed",
+      "fix_note": "删除了恒为 false 且从未被引用的 needsCustomVoicePrompt 声明（Frontend/src/pages/ConfigPage.tsx:209）。npm run build 已重新跑通：tsc -b 无报错，vite build 产出 dist 正常。"
+    },
+    {
+      "id": 2,
+      "category": "logic_defect",
+      "severity": "medium",
+      "title": "ConfigPage.tsx 在 effect 中同步调用 setState，可能引发级联渲染",
+      "description": "水合任务详情到表单状态时直接在 useEffect 里连续 setVoiceId/setAvatarId 等，不符合 React 推荐模式，ESLint react-hooks/set-state-in-effect 报错。",
+      "location": "Frontend/src/pages/ConfigPage.tsx:113-118",
+      "evidence": "npx eslint . → Calling setState synchronously within an effect body",
+      "status": "fixed",
+      "fix_note": "该 effect 是「任务首次加载时把服务端数据灌入本地可编辑表单」的一次性水合逻辑，由 hydratedRef 保证只执行一次，不是级联更新场景，重构成非 effect 形式收益不高、风险较大。改为对该段加范围化的 eslint-disable（并注明原因），而不是压制整条规则。npx eslint 复检该文件已无 error，仅剩一条与本条无关、且已在扫描时判定为低优先级排除在待办外的 exhaustive-deps 警告。npm run build 重新跑通。"
+    },
+    {
+      "id": 3,
+      "category": "logic_defect",
+      "severity": "medium",
+      "title": "ScriptPage.tsx useMemo 依赖与 React Compiler 推断不一致，风险高亮可能计算滞后/错误",
+      "description": "手动声明依赖数组比实际用到的依赖更宽泛（多了 fullScriptDraft/canUseCompliance/riskStale），React Compiler 无法保留该记忆化，存在高亮结果与最新文案/风险状态不同步的风险。",
+      "location": "Frontend/src/pages/ScriptPage.tsx:147-150",
+      "evidence": "npx eslint . → Compilation Skipped: Existing memoization could not be preserved (react-hooks/preserve-manual-memoization)",
+      "status": "fixed",
+      "fix_note": "把依赖数组里的 displayRiskCheck?.findings 改为 displayRiskCheck（与 React Compiler 实际推断出的依赖对齐），实际使用的字段（.findings.length / .findings）都挂在同一个 displayRiskCheck 对象下，语义不变。npx eslint 复检该文件 0 error/0 warning，npm run build 通过。"
+    },
+    {
+      "id": 4,
+      "category": "logic_defect",
+      "severity": "medium",
+      "title": "ScriptPage.tsx 在 effect 中同步调用 setState",
+      "description": "任务状态变为 transcribed 时在 effect 内直接连续 setDraftSegments(null)/setFullScriptDraftOverride(null)，同 #2 问题模式。",
+      "location": "Frontend/src/pages/ScriptPage.tsx:183-188",
+      "evidence": "npx eslint . → Calling setState synchronously within an effect body",
+      "status": "fixed",
+      "fix_note": "该 effect 是「任务状态变化后重置本地草稿并使 segments 重新拉取」，属于响应外部状态变化重置本地缓冲区，同 #2 一样加范围化 eslint-disable 并注明原因，未做大范围重构。npx eslint 复检该文件 0 error，npm run build 通过。"
+    },
+    {
+      "id": 5,
+      "category": "security",
+      "severity": "high",
+      "title": "后端所有 API 无鉴权，公开可访问",
+      "description": "app/api/deps.py 只提供 get_db，main.py 未注册任何认证中间件/依赖，所有路由仅做数据库会话注入。此前重构中出现过的登录鉴权模块已在用户确认的 git reset --hard 中被丢弃，未合并入远程主分支。若部署到公网/多用户环境，任务数据、下载链接、分发凭证等均无访问控制。",
+      "location": "Backend/app/api/deps.py; Backend/app/main.py",
+      "evidence": "人工审阅路由与依赖注入，未发现任何鉴权依赖或中间件注册",
+      "status": "fixed",
+      "fix_note": "没有做完整的用户账号/登录体系（此前重构中出现过的那一套已被明确丢弃，重新做是一个独立的大功能，不属于「修复缺口」的合理范围）。改为加一道可选但真实生效的共享密钥闸门：Backend/app/core/config.py 新增 api_auth_token（默认空字符串=不鉴权，保持现有本地/桌面单机体验不变）；Backend/app/main.py 新增 HTTP 中间件，`api_auth_token` 非空时，所有 /api/* 请求必须带 `X-API-Key` header 且匹配，否则 401，/health 不受影响；.env.example 新增 API_AUTH_TOKEN 说明。部署到局域网/公网前设置该值即可拿到基本的访问控制。新增 Backend/tests/test_api_auth.py，用 FastAPI TestClient + sqlite 内存库跑了 5 个用例：未配置时放行、配置后缺 key 401、错 key 401、对 key 200、/health 不受影响。全部 backend 测试合并跑（test_task_guards.py + test_api_auth.py）26 passed。",
+      "scope_note": "这是「给一个可开启的真实开关」而不是「完整多用户鉴权系统」，如果需要登录页/用户体系/权限分级，请单独提出作为新需求。"
+    },
+    {
+      "id": 6,
+      "category": "dependency",
+      "severity": "medium",
+      "title": "Playwright 浏览器二进制未在镜像中安装，分发到抖音/小红书会运行时报错",
+      "description": "playwright_publisher.py 通过 Playwright 驱动浏览器发布，但 Backend/Dockerfile 与 worker.Dockerfile 都没有执行 `playwright install`（或 install-deps），容器内缺少浏览器可执行文件，调用时会抛出 Executable doesn't exist 类错误。",
+      "location": "Backend/Dockerfile; Backend/worker.Dockerfile; Backend/app/adapters/playwright_publisher.py",
+      "evidence": "grep 'playwright' Backend/Dockerfile Backend/worker.Dockerfile 无匹配",
+      "status": "no_change_needed",
+      "fix_note": "复查 playwright_publisher.py 实际调用的是 playwright.chromium.connect_over_cdp(playwright_chrome_cdp_url)，即连接宿主机已运行、开了远程调试端口(默认 host.docker.internal:9222)的现成 Chrome，而不是让 Playwright 自己启动内置浏览器。因此不需要在镜像里执行 playwright install 下载浏览器二进制；worker 镜像里只要 pip 装了 playwright 这个 Python 包（pyproject.toml 已声明）即可满足 import。此前的判断是没看具体调用方式就下的结论，属于误判，已撤销该项，不做改动。真正的前置条件（用户需要自行启动带远程调试的 Chrome）在 README 已有体现。"
+    },
+    {
+      "id": 7,
+      "category": "config_gap",
+      "severity": "medium",
+      "title": "分发功能默认不可用：sau CLI 未安装，distributor 容器只是占位符",
+      "description": "DistributorAdapter 通过 subprocess 调用宿主 `sau` 命令，但 worker.Dockerfile 未安装该 CLI；docker-compose.yml 里的 distributor 服务只是 `sleep infinity` 占位，未真正运行任何服务。ENABLE_DISTRIBUTION 默认 false，属已知限制，但缺少一条可执行的接入路径说明或脚本。",
+      "location": "docker-compose.yml (distributor); Backend/worker.Dockerfile; Backend/app/adapters/distributor.py",
+      "evidence": "人工审阅 Dockerfile 与 compose 定义，未发现 sau 安装步骤",
+      "status": "fixed",
+      "fix_note": "确认 social-auto-upload/pyproject.toml 里确实有 `sau = \"sau_cli:main\"` 的 console_script，是可安装的。新增 scripts/setup-sau-cli.sh，把同级 social-auto-upload 仓库以可编辑模式装进当前环境并校验 `sau --help`；docker-compose.yml 的 worker 服务加了一行注释掉的 volume（挂载 ../social-auto-upload），distributor 占位服务的提示语改为指向这个脚本。注意：本机没有跑起来的 Docker daemon，无法真正 docker build/exec 跑通该脚本在容器内的效果（sau 依赖 opencv-python，精简镜像可能还需装 libgl1 等系统库，脚本注释里已提示）；已做的验证是脚本本身语法通过（bash -n）、docker compose config 校验通过、且核实了 sau 在源仓库里确实是可安装的入口。这一条比其它几条更接近'搭好可执行路径'而非'端到端跑通验证'，请知悉。",
+      "verification_caveat": "未能在本环境完成 docker build + docker compose exec worker 的端到端验证（无可用 Docker daemon）"
+    },
+    {
+      "id": 8,
+      "category": "dead_code",
+      "severity": "low",
+      "title": "三个微服务目录是空壳，未接入 docker-compose 或后端",
+      "description": "Services/faster-whisper-service、Services/wav2lip-service、Services/xtts-service 只有 Dockerfile/pyproject.toml，没有 app/main.py，docker-compose.yml 也未定义对应服务，Backend adapters 均未引用。属于遗留脚手架，建议删除或补齐实现。",
+      "location": "Services/faster-whisper-service; Services/wav2lip-service; Services/xtts-service",
+      "evidence": "find 未发现三个目录下的 app/main.py；docker-compose.yml 服务清单中不含三者",
+      "status": "fixed",
+      "fix_note": "修复前用 `git ls-files` 复核发现：这三个目录其实完全没有被 git 追踪（不是仓库里的脚手架代码），目录里只有 .gitignore 忽略的本地 .venv（分别 204M/24M/1.7G，共约 1.93G）和一个孤立的 __pycache__/main.cpython-311.pyc，没有任何 Dockerfile/pyproject.toml/源码——说明这是之前本地开发遗留的虚拟环境垃圾，`git clean -fd`（不带 -x）不会清理被 .gitignore 忽略的文件，所以在此前的 reset 中被保留了下来。这与扫描阶段的描述（\"只有 Dockerfile/pyproject.toml\"）不符，已用直接验证结果为准。处理方式：直接删除这三个目录，释放约 1.93G 本地磁盘空间；`git status` 确认删除前后仓库无任何变化（因为本来就不在版本控制里），不影响任何人 clone 到的代码。"
+    },
+    {
+      "id": 9,
+      "category": "doc_mismatch",
+      "severity": "medium",
+      "title": "顶层 README 声明的对象存储（MinIO/S3）功能在代码中不存在",
+      "description": "MediaPlatform/README.md 提到 `.env.docker` 设置 `STORAGE_BACKEND=s3` 可将成片同步对象存储，但 Backend/app/core/config.py 中没有 storage_backend/S3/MinIO 相关字段，此前的 storage_backend.py 实现也已在 git reset 中被丢弃、未合并进远程主分支。文档描述了一个当前不存在的能力。",
+      "location": "README.md (MediaPlatform 根目录); Backend/app/core/config.py",
+      "evidence": "grep 'storage_backend|STORAGE_BACKEND|s3|minio' Backend/app/core/config.py 无匹配",
+      "status": "fixed",
+      "fix_note": "深入核查后发现问题比最初描述的更大：顶层 README 整个「启动」章节（.env.docker、docker-compose.full.yml、docs/deployment-docker-full.md、scripts/start-docker-full.sh、scripts/start-all-local.sh、.env.local-worker、docs/local-*-setup.md 等）引用的文件全部已在此前的 git reset 中被丢弃；目录表里写的 whisper/CosyVoice/HeyGem 同级仓库实际上并不存在（真实同级目录是 DigitalHuman/FFmpeg/Wav2Lip/social-auto-upload），Wav2Lip 反而没被提及。另外顶层 start.sh/stop.sh 引用的 DigitalHuman/docker-compose.unified.yml 和 .env.docker 也已不存在——这两个脚本目前实际是跑不起来的（构建失败范畴），已一并修复：改为指向真实存在的 docker-compose.yml + .env.example，`docker compose config` 校验通过，bash -n 语法检查通过。README 已整体重写：目录表、启动方式、端口表、分发功能说明都改为对照真实 docker-compose.yml/. env.example/docs 目录核实过的内容，删除了 MinIO/S3 这个代码里不存在的能力，并把 GET /health/ready 改成实际存在的 GET /health。受限于本环境没有可用的 Docker daemon，未能真正 docker compose up 跑一遍验证容器能起来，这点如实告知。",
+      "verification_caveat": "已补做端到端验证：用户开启 Docker 后执行 `bash start.sh`，web/api/worker/mysql/redis 全部 Up，见 #11/#12"
+    },
+    {
+      "id": 11,
+      "category": "config_gap",
+      "severity": "high",
+      "title": "docker-compose.yml 的 mysql/redis 宿主机端口与本机已有服务冲突，start.sh 直接起不来",
+      "description": "Docker daemon 开启后实际执行 `bash start.sh`，`docker compose up` 报错 `ports are not available: exposing port TCP 0.0.0.0:3306`。本机已有原生/其它容器占用 3306 和 6379（原生 redis-server 常驻 6379；另一个不相关项目 ai-platform-mysql/ai-platform-redis 也在跑），docker-compose.yml 里 mysql/redis 直接把容器内 3306/6379 映射到宿主机同名端口，必然冲突。",
+      "location": "DigitalHuman/docker-compose.yml (mysql, redis)",
+      "evidence": "实际执行 `bash start.sh` 报错：`listen tcp 0.0.0.0:3306: bind: address already in use`；`lsof/netstat` 确认 3306/6379 已被占用",
+      "status": "fixed",
+      "fix_note": "把宿主机映射端口改掉，容器内部端口和服务间通信（api/worker 用 `mysql:3306`、`redis:6379` 内部域名访问）完全不受影响：mysql 映射改为 `33061:3306`，redis 映射改为 `63791:6379`。`docker compose config` 校验通过，`docker compose up` 实际跑通，mysql 显示 healthy，redis/api/worker/web 全部 Up。"
+    },
+    {
+      "id": 12,
+      "category": "logic_defect",
+      "severity": "critical",
+      "title": "遗留 mysql-data 卷 schema 落后于当前 ORM 模型，核心接口 500",
+      "description": "容器起来后 `GET /api/tasks` 返回 500，worker/api 日志显示 `sqlalchemy.exc.OperationalError: Unknown column 'tasks.source_url'`。根因：本机已有一个从更早版本遗留下来的 `mysql-data` Docker 卷（真实存有 39 条历史任务数据），`app/main.py` 启动时只用 `Base.metadata.create_all` 建表，这个调用只补建缺失的表、不会给已存在的表补列；而项目虽然有 Alembic 迁移文件，实际并没有被自动执行，导致这个卷的 `tasks`/`distribution_records` 表结构停留在旧版本模型，缺 source_url/pipeline_mode/pipeline_stage/voice_speed/background_music_mode/ai_watermark_enabled/export_without_subtitle/avatar_engine（tasks 表）和 cover_artifact_id（distribution_records 表）共 9 个字段。",
+      "location": "Backend/app/main.py (lifespan 用 create_all 而非跑 alembic); Backend/app/db/migrations/versions/20260618_0003_krlongai_alignment.py",
+      "evidence": "`docker logs digitalhuman-api-1` 报 OperationalError；`DESCRIBE tasks`/`DESCRIBE distribution_records` 对照 app/db/models.py 确认缺列",
+      "status": "fixed",
+      "fix_note": "卷里有 39 条真实历史任务数据，没有直接删卷重建（会丢数据），改为对现有表做纯新增、可空列的 ALTER TABLE（不影响已有行）：tasks 表补齐 source_url/pipeline_mode/pipeline_stage/voice_speed/background_music_mode/ai_watermark_enabled/export_without_subtitle/avatar_engine，distribution_records 表补齐 cover_artifact_id，字段类型/可空性均对照 20260618_0003 迁移文件与 models.py 定义。修复后 `GET /api/tasks` 返回 200，39 条历史任务数据完整可读。根本问题（应用没有在启动时自动跑 alembic upgrade，长期靠 create_all 容易和迁移文件脱节）建议后续在 lifespan 或部署脚本里加一步 `alembic upgrade head`，这次先解决当下阻断问题，不在本轮改动启动流程。"
+    },
+    {
+      "id": 10,
+      "category": "test_coverage",
+      "severity": "low",
+      "title": "Backend 无任何测试用例，pytest 依赖形同虚设",
+      "description": "pyproject.toml 的 dev 依赖声明了 pytest，但仓库内没有任何 test_*.py / *_test.py 文件。状态机守卫、一键流水线编排等核心逻辑没有回归保护。",
+      "location": "Backend/pyproject.toml; Backend/ (整体)",
+      "evidence": "find . -iname 'test_*.py' -o -iname '*_test.py' 无结果（排除 .venv）",
+      "status": "fixed",
+      "fix_note": "新增 Backend/tests/test_task_guards.py，覆盖状态机核心守卫逻辑（is_generation_phase / assert_not_in_generation / assert_can_confirm_script_risk / is_stale_generation / assert_can_retry_generation），共 21 个用例，纯内存构造 TaskModel 不依赖数据库。选择 task_guards.py 作为首批测试对象是因为它是纯函数、无 IO，且直接决定一键流水线能否重试/编辑，是当前状态机里回归风险最高的部分；完整覆盖 pipeline_service/workers 需要 mock Celery/DB，工作量明显更大，本轮先建立测试基础设施和最高价值的一块，不在本次范围内一次性补全全部模块。用 `uv pip install --python .venv/bin/python pytest` 把 pytest 装进已有的 Backend/.venv（该 venv 已有 fastapi/sqlalchemy/pydantic 等运行依赖），执行 `.venv/bin/python3 -m pytest tests/test_task_guards.py -v`：21 passed。"
+    },
+    {
+      "id": 13,
+      "category": "config_gap",
+      "severity": "medium",
+      "title": "runtime-info 里 has_yt_dlp 报 false，误导前端判断 URL 导入不可用",
+      "description": "GET /api/system/runtime-info 返回 has_yt_dlp: false，但实际发起 URL 下载任务的是 worker 容器（worker.Dockerfile 里 pip 装了 yt-dlp），API 容器自己没装。system.py 的检查是在 API 进程里查 PATH，检查的是错误的容器；桌面单进程模式（local_desktop_mode，API 和任务执行在同一进程）下这个检查倒是准确的，但当前 docker-compose 多容器模式下就会误报。",
+      "location": "Backend/app/api/routers/system.py (has_yt_dlp 检查); Backend/Dockerfile（未装 yt-dlp，worker.Dockerfile 有）",
+      "evidence": "`docker exec digitalhuman-api-1 which yt-dlp` → 未找到（exit 1）；`docker exec digitalhuman-worker-1 which yt-dlp` → /usr/local/bin/yt-dlp（exit 0）；GET /api/system/runtime-info 返回 has_yt_dlp: false",
+      "status": "fixed",
+      "fix_note": "Backend/Dockerfile 加了一行 `pip install --no-cache-dir yt-dlp`（和 worker.Dockerfile 保持一致，也兼顾桌面单进程模式）。`docker compose build api && docker compose up -d api` 重建后，GET /api/system/runtime-info 返回 has_yt_dlp: true，实测验证通过。"
+    },
+    {
+      "id": 14,
+      "category": "config_gap",
+      "severity": "high",
+      "title": "Whisper 桥接服务没有随基础栈启动，处于 stub 模式",
+      "description": "whisper-service 走的是本地 openai-whisper 模型推理，不需要任何外部仓库/大模型下载配置，只要 `--profile whisper`（或 models）启动即可；WHISPER_MODEL=base 首次调用会自动下载约 140MB 模型。当前只启动了默认 profile（web/api/worker/mysql/redis），加上全局 USE_STUB_MODEL_ADAPTERS=true，所以走的是占位输出。",
+      "location": "docker-compose.yml (whisper service, profile); .env.example (USE_STUB_MODEL_ADAPTERS)",
+      "evidence": "`docker compose ps` 未见 whisper 容器；runtime-info 里 cosyvoice_ok/heygem_ok/tuilionnx_ok 均为 false 且 use_stub_model_adapters: true；网络连通性测试确认可访问 openaipublic.azureedge.net（whisper 模型下载源）",
+      "status": "fixed",
+      "fix_note": ".env.example 里 USE_STUB_MODEL_ADAPTERS 改为 false，`docker compose --profile whisper up -d --build` 启动 whisper 服务。首次调用时实测自动下载了 139M 的 base 模型（日志可见完整下载进度条）。先用 storage/shared/default_voice.wav 测试返回「未返回可用文案」（422）——排查后发现是这个占位音频本身没有可识别语音内容，不是服务的问题；改用 macOS `say` 现场合成一句真实中文语音再测试，返回 `{\"text\":\"你好,這是一個語音識別測試\", \"confidence\":0.995}`，确认真实 ASR 推理完全跑通（非 stub）。测试文件用后已删除。"
+    },
+    {
+      "id": 15,
+      "category": "config_gap",
+      "severity": "high",
+      "title": "HeyGem 未接官方视频合成后端，但该后端其实已经在本机跑着",
+      "description": "本机已有一个独立运行的 duix-avatar-gen-video 容器（guiji2025/duix.avatar 镜像，挂在 digitalhuman_default 网络里），/easy/query 探测返回正常的业务错误（\"code参数缺失\"），说明服务本身是活的、能被同网络的 heygem-service 容器访问到。数据库里预置的 avatar_profiles（avatar_studio_a/b）已经配置了 reference_video_path: shared/default_avatar.mp4，storage/shared/ 下也确实有 default_avatar.mp4 和 default_voice.wav 两个真实文件。缺的只是把 HEYGEM_VIDEO_BASE_URL / HEYGEM_DEFAULT_VIDEO_PATH 指过去、把 heygem 服务和 ALLOW_STUB_OUTPUT 打开成 false 这一步配置，不需要新下载任何模型。",
+      "location": ".env.example (HEYGEM_VIDEO_BASE_URL/HEYGEM_DEFAULT_VIDEO_PATH 均为空); docker-compose.yml (heygem service 未启动)",
+      "evidence": "`docker ps` 显示 duix-avatar-gen-video Up；`curl :8383/easy/query` 返回 `{\"code\":10002,\"msg\":\"code参数缺失\"}`（HTTP 200，服务存活）；`SELECT config FROM avatar_profiles` 显示 reference_video_path 已配置；`ls storage/shared/` 确认 default_avatar.mp4 (55KB) / default_voice.wav 存在",
+      "status": "partially_fixed",
+      "fix_note": "配置层面已经打通并验证：.env.example 设置 HEYGEM_VIDEO_BASE_URL=http://duix-avatar-gen-video:8383、HEYGEM_DEFAULT_VIDEO_PATH=/app/storage/shared/default_avatar.mp4，heygem-service 重建后 /health 返回 mode: official-video-api，runtime-info 里 heygem_ok: true。实测调用 POST /generate（真实 audio_path+avatar_profile_id）后，duix-avatar-gen-video 的日志确认收到了正确的 submit 请求（audio_url/video_url 路径都对，说明两个容器共享 storage 挂载、路径不需要额外转换），但此后 6 分钟以上没有任何进一步日志，`docker stats` 显示该容器 CPU 占用接近 0%（不是在真实计算），`docker exec ... ps aux` 看到 3 个僵尸子进程 `[python] <defunct>`，`uname -m` 确认容器是 x86_64（Apple Silicon 上 amd64 模拟），`nvidia-smi` 报 exec format error。综合判断：配置本身完全正确，但这个预构建的 guiji2025/duix.avatar 镜像大概率依赖真实 GPU（CUDA），在这台 Mac 的 amd64 模拟环境下实际合成进程会挂起/崩溃而不是「较慢但能跑完」，这和项目文档里「HeyGem 为 linux/amd64 模拟，合成慢」的描述比预期更严重——现象更像卡死而非单纯慢。已重启 heygem-service 清掉这次卡住的请求，删除了测试任务目录。",
+      "verification_caveat": "配置/网络/路径三项均已验证正确；实际视频合成在本机（无 NVIDIA GPU、容器为 amd64 模拟）大概率跑不通",
+      "user_decision": "已跟用户确认：先接受现状，不再深究这台 Mac 上的 GPU/模拟限制。若后续有真实 GPU 或 Linux amd64 机器，可重新按当前配置（HEYGEM_VIDEO_BASE_URL/HEYGEM_DEFAULT_VIDEO_PATH 已就绪）直接验证。"
+    },
+    {
+      "id": 16,
+      "category": "dependency",
+      "severity": "high",
+      "title": "CosyVoice 真实配音后端完全没有搭建——需要克隆大仓库+下载大模型，不是配置问题",
+      "description": "COSYVOICE_UPSTREAM_URL/COMMAND_TEMPLATE/MODEL_DIR 三种真实接入模式都需要一个真正跑着的 CosyVoice（官方仓库 + 模型权重），本机 DigitalHuman/external/ 目录完全不存在，没有克隆 CosyVoice 仓库也没有下载任何模型权重。这不是「漏配了一行 env」能解决的，需要：(a) git clone CosyVoice 仓库到 external/CosyVoice，(b) 从 ModelScope/HuggingFace 下载模型权重（官方 CosyVoice2-0.5B 模型约几个 GB），(c) 装一堆 Python/系统依赖（含可能需要的 GPU 相关库），(d) 在 Mac 上大概率是 CPU 推理，速度按文档描述会比较慢。属于「新增一个真实 ML 服务」量级的工作，不是缺口修复。",
+      "location": "DigitalHuman/external/（整个目录不存在）; Services/cosyvoice-service",
+      "evidence": "`ls external/` → 目录不存在；.env.example 里 COSYVOICE_UPSTREAM_URL/COMMAND_TEMPLATE/MODEL_DIR 全部为空，且没有对应的官方 CosyVoice runtime 容器在跑（docker ps 里没有 cosyvoice-runtime 之类的服务）",
+      "status": "deferred",
+      "scope_note": "涉及克隆大仓库+下载数 GB 模型权重+可能较长的 CPU 推理耗时，动手前需要跟你确认是否要现在做、以及模型版本/存放位置怎么选，不在本轮默认直接执行范围内",
+      "user_decision": "已确认：现在不做，等部署环境（是否有 GPU/Linux 机器）确定后再启动这项工作"
+    },
+    {
+      "id": 17,
+      "category": "dependency",
+      "severity": "high",
+      "title": "TuiliONNX（第二数字人引擎）真实后端完全没有搭建，同 #16 性质",
+      "description": "TUILIONNX_REPO_PATH=./external/Ultralight-Digital-Human 和 TUILIONNX_DEFAULT_DATA_PATH 指向的目录都不存在，需要克隆 Ultralight-Digital-Human 仓库并准备对应人物的 ONNX 模型/训练数据（这类数字人模型通常需要针对特定人物预先训练/转换，不是通用下载一个权重文件就能用）。",
+      "location": "DigitalHuman/external/（不存在）; Services/tuilionnx-service",
+      "evidence": "`ls external/` → 目录不存在；.env.example 里 TUILIONNX_REPO_PATH/TUILIONNX_DEFAULT_DATA_PATH 指向的路径均不存在",
+      "status": "deferred",
+      "scope_note": "同 #16，这类数字人模型通常要为特定人物单独训练/转换 ONNX，工作量和数据准备要求都明显超出「配置修复」范畴，需要你确认是否要投入做，以及用谁的人物素材",
+      "user_decision": "已确认：现在不做，等部署环境确定后再说"
+    }
+  ]
+}
